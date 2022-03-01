@@ -4,8 +4,9 @@ extern crate dotenv;
 
 pub mod models;
 pub mod schema;
+mod engine;
 
-
+use engine::{search::browse, types::Query};
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
 use diesel::result::Error;
@@ -23,45 +24,72 @@ fn connect() -> PgConnection {
 }
 
 
-fn retrieve_sites(conn: &PgConnection){
-    use schema::sites::dsl::*;
+fn retrieve_repos(conn: &PgConnection){
+    use schema::repos::dsl::*;
 
     
-    let results = sites
-        .load::<Site>(conn)
-        .expect("Error loading sites");
+    let results = repos
+        .load::<Repo>(conn)
+        .expect("Error loading repos");
     
-    for site in results{
-        println!("URL -> {}", site.site_url);
-        println!("Name -> {}", site.site_name);
+    for repo in results{
+        println!("URL -> {}", repo.repo_url);
+        println!("Name -> {}", repo.repo_name);
     }
 }
 
 
-fn insert_sites(conn: &PgConnection, name: &str, url: &str) -> Result<i32, Error>{
-    let site = newSite {
-        site_name: name.to_string(),
-        site_url: url.to_string(),
-    };
-    let id: i32 = diesel::insert_into(schema::sites::table)
-        .values(&site)
-        .returning(schema::sites::id)
+fn insert_repos(conn: &PgConnection, repo: &NewRepo) -> Result<i32, Error>{
+    
+    let id: i32 = diesel::insert_into(schema::repos::table)
+        .values(repo)
+        .returning(schema::repos::id)
         .get_result(conn)?;
     
     Ok(id)
 }
-
 
 fn main(){
     
     println!("Connecting to DB");
     let connection = connect();
 
-    let googleId = insert_sites(&connection, "Google", "google.com");
-    let facebookId = insert_sites(&connection, "Facebook", "facebook.com");
-    let instagramId = insert_sites(&connection, "Instagram", "instagram.com");
+    /* let lids = vec![1, 2, 3];
+    let cids  = vec![1, 2, 3];
+    let repo = NewRepo {
+        repo_name: "Pepper Sprout".to_string(),
+        repo_url: "https://github.com/lucas-cauhe/Pepper_Sprout".to_string(),
+        languages_id: lids.to_vec(),
+        contributors_id: cids.to_vec(),
+    };
+    let _repo_id = insert_repos(&connection, &repo); */
+    /* let facebookId = insert_repos(&connection, "Facebook", "facebook.com", );
+    let instagramId = insert_repos(&connection, "Instagram", "instagram.com"); */
     
-    println!("Retrieving Sites");
-    retrieve_sites(&connection);
+    //println!("Searching Repos");
+    //retrieve_repos(&connection);
+
+    let query = Query {
+        repo_name: "Pepper".to_string(),
+        contributors_id: [1].to_vec(),
+        languages_id: [1, 3].to_vec()
+    };
+
+    let result = browse(&query, &connection).unwrap();
+    
+    println!("Results for searching names: ");
+    for repo in result.by_name {
+        println!("Repo with name {n} and id {id}", n=repo.repo_name, id=repo.id);
+    }
+
+    println!("Results for searching langs: ");
+    for repo in result.by_lang {
+        println!("Repo with name {n} and id {id}", n=repo.repo_name, id=repo.id);
+    }
+
+    println!("Results for searching conts: ");
+    for repo in result.by_cont {
+        println!("Repo with name {n} and id {id}", n=repo.repo_name, id=repo.id);
+    }
 
 }
