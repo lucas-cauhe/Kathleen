@@ -1,12 +1,15 @@
 #[macro_use]
 extern crate diesel;
 extern crate dotenv;
+extern crate hnsw;
 
 pub mod models;
 pub mod schema;
+pub mod types;
 mod engine;
 
-use engine::{search::browse, types::Query};
+use types::Query;
+use engine::{search::main::browse};
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
 use diesel::result::Error;
@@ -70,9 +73,9 @@ fn main(){
     //retrieve_repos(&connection);
 
     let query = Query {
-        repo_name: "Pepper".to_string(),
-        contributors_id: [1].to_vec(),
-        languages_id: [1, 3].to_vec()
+        repo_name: Some("".to_string()),
+        contributors_id: [1, 2].to_vec(),
+        languages_id: [].to_vec()
     };
 
     let result = browse(&query, &connection).unwrap();
