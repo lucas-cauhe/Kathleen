@@ -6,33 +6,3 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-diesel = { version = "1.4.4", features = ["postgres"] }
-dotenv = "0.15.0"
-hnsw = "0.11.0"
-space = { version = "0.17.0", default-features = false, features = ["alloc"] }
-rand_pcg = { version = "0.3.1", features = ["serde1"] }
-
-[dev-dependencies]
-
-rand_core = "0.6.3"
-hashbrown = "0.11.2"
-libm = "0.2.1"
-smallvec = { version = "1.6.1", features = ["const_generics"] }
-ahash = { version = "0.7.4", default-features = false }
-num-traits = { version = "0.2.14", default-features = false }
-
-hamming-heap = "0.4.1"
-rand = "0.8.4"
-criterion = "0.3.4"
-gnuplot = "0.0.37"
-structopt = "0.3.22"
-easybench = "1.1.0"
-itertools = "0.10.1"
-float-ord = "0.3.1"
-byteorder = "1.4.3"
-serde_json = "1.0.64"
-bitarray = { version = "0.9.1", default-features = false, features = ["space"] }
-
-[[example]]
-name = "hnsw"
-path = "examples/hnsw.rs"

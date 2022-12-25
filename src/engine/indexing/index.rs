@@ -19,9 +19,32 @@
 
 
 // MEMORY MANAGEMENT
-    // SINCE LSH REQUIRES LITTLE MEMORY IT COULD BE MAPPED IN MEMORY SUCH AS AN LMDB APPROACH
+    // CONSIDERING LMDB APPROACH IF VIABLE FOR IVF
 
 
 
 // MEMORY SPECULATION
 
+
+
+pub struct Repo {
+
+}
+
+pub struct RepoFlat {
+
+}
+
+impl Repo {
+    pub fn flatten(&self) -> RepoFlat{
+        todo!()
+    }
+}
+
+impl RepoFlat {
+
+    pub fn rebuild(&self) -> Repo {
+        todo!()
+    }
+
+}
