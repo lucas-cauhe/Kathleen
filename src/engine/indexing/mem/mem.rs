@@ -16,13 +16,19 @@
 
 // WHEN I SAY MEMORY I'M TRULY MEANING THE SPACE OCCUPIED IN MEMORY BY THE DB FILE MAPPED IN MEMORY
 
-use std::slice::Iter;
+
 use std::{collections::HashMap, io};
 use std::fs;
+use crate::engine::graph::clusters::clusters::Cluster;
 use crate::{tokenizer::tokenize::Embedding, engine::indexing::index::RepoFlat};
 
-type ContainerId = i32;
+use lmdb::{self, Environment, Error};
+use crate::engine::indexing::db::ctx::{CTX, create_env, insert_named};
 
+type ContainerId = i32;
+type ClusterId = i32;
+
+// MemInstance will be dropped when required: merging data to db, after performing KNN, (more when working with clusters)
 pub struct MemInstance {
 
 
@@ -33,7 +39,10 @@ pub struct MemInstance {
     // first and last containers contained in this MemInstance
     // used for searching containers
     first: ContainerId,
-    last: ContainerId
+    last: ContainerId,
+
+    // used when merging mem instance to db
+    cluster_id: Option<ClusterId>
 
 }
 
@@ -52,6 +61,27 @@ impl MemInstance {
         todo!()
     }
 
+    pub fn compute_belonging_cluster() -> () {
+        todo!()
+    }
+
+    pub fn merge(&self) -> Result<(), Error> {
+        // load cluster_id env from ctx
+        let env: &Environment = unsafe {
+            if let Some(e) = CTX.get(self.cluster_id.unwrap()) {
+                e.into()
+            } else {
+                create_env()?
+            }
+        };
+
+        insert_named(&self.containers, env)?;
+        Ok(())
+    }
+
+    pub fn merge_consume(self) -> Result<(), Error> {
+        self.merge()
+    }
 }
 
 // Consider atomicity of these functions
@@ -65,6 +95,12 @@ pub trait Move {
     // dest_mem must be alligned to Container size
     // if dest_mem is None, reallocate will select the best place for the given destiny node
     fn reallocate(self: Box<Self>, dest_mem: i32, dest_node: ContainerId) -> Result<Box<dyn Move>, io::Error>;
+    // container Id
+    fn get_key(self: &Box<Self>) -> String;
+    // flatten object
+    fn get_object(self: &Box<Self>) -> String;
+    fn get_embedding(self: &Box<Self>) -> Embedding;
+
 }
 
 
@@ -90,12 +126,15 @@ pub struct ClusterInfoContainer {
     // Optional since their similarity mightn't be computed yet
     neighbors: Vec<Option<f32>>, // if cluster ids are going to be randomly generated (large numbers) turn to hashmap below
     // neighbors: HashMap<i32, Option<f32>>, // K: Neighbor cluster id, V: Some(computed similarity between clusters)
-    
+    // same for stations
     stations: Vec<i32>, // Numbered stations between two cluster nodes, each value represents the station id
 
     containers_count: i32, // number of containers within the cluster
 
-    representative:  ContainerId   // container id 
+    centroid:  ContainerId,  // container id 
+
+    // may not be necessary
+    boundaries: Vec<ContainerId> // each value is the Container that acts as boundary to the cluster (used for computing similarities or distances)
 }
 
 
@@ -122,6 +161,30 @@ impl Container {
 
     pub fn get_repo_obj<'a>(&self) -> &'a RepoFlat {
         &self.repo_obj
+    }
+}
+
+impl Move for Container {
+    fn free_container(self: Box<Self>) -> Result<Box<dyn Move>, io::Error> {
+        todo!()
+    }
+
+    fn reallocate(self: Box<Self>, dest_mem: i32, dest_node: ContainerId) -> Result<Box<dyn Move>, io::Error> {
+        todo!()
+    }
+}
+
+impl ClusterInfoContainer {
+    // GETTERS
+}
+
+impl Move for ClusterInfoContainer {
+    fn free_container(self: Box<Self>) -> Result<Box<dyn Move>, io::Error> {
+        todo!()
+    }
+
+    fn reallocate(self: Box<Self>, dest_mem: i32, dest_node: ContainerId) -> Result<Box<dyn Move>, io::Error> {
+        todo!()
     }
 }
 
