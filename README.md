@@ -12,3 +12,10 @@ The vector database will be indexed using either LSH or IVF, in the end Kathleen
 As a result, Kathleen starts to look like an undirected graph which joins different clusters (its nodes) with weighted paths (weigths) defined by the similarity of the nodes they are pulling together. Finally if we where to search for similar gh repos to n given, the result would be the node or 'station' whose 'similarity distance' is the highest to any other given node.
 
 Now, once described how GH repos are going to be indexed, it seems natural that the indexing method chosen is IVF.
+
+
+# Storage 
+
+Following the schema presented in [this post](https://towardsdatascience.com/similarity-search-with-ivfpq-9c6348fd4db3), Kathleen's storage will be divided into two main parts: an "environment" for each cluster/partition made and an inverted list which will point to each "environment" where to find a set of vectors.
+
+An environment will have every raw vector that belongs to that cluster as well as every object representation for each vector in the environment. This way each environment will be responsible for its own vectors (not talking about how this could scale).
