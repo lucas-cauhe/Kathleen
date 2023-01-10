@@ -4,14 +4,13 @@
 
 use lmdb_zero::{Environment, Error};
 
+use crate::engine::utils::types::{VecId, ClusterId, PQCodeId};
+
 
 // This structure will hold the env where anonymous db entries are clusterIds 
 // and every value is an array of entryIds that refer to a primary key in the named db
 // where a vectorId and a PQCode / PQCodeId are stored
 
-type VectorId = usize;
-type ClusterId = usize;
-type PQCodeId = usize;
 
 pub struct InvertedList {
 
@@ -19,19 +18,18 @@ pub struct InvertedList {
 }
 
 pub struct InvertedListInnerValue {
-    vec_id: VectorId,
-    pq_code_id: PQCodeId
-    //pq_code: Vec<usize>
+    vec_id: VecId,
+    pq_code: Vec<ClusterId> // ClusterId must be a valid type for an entry in the Codebook
 }
 
 pub struct InvertedListValue{
-    entries_array: Vec<usize>
+    entries_array: Vec<InvertedListInnerValue> // each position in the array indicates the entry in the codebook table where the centroid vector is located
 }
 
 impl InvertedList {
 
 
-    pub fn add_cluster(&self, id: ClusterId) -> Result<(), Error> {
+    pub fn add_clusters(&self, ids: &[ClusterId]) -> Result<(), Error> {
 
         // check if id is contained in the Codebook and isn't duplicate
 
@@ -45,7 +43,10 @@ impl InvertedList {
 
             {
                 let mut access = txn.access();
-                access.put(&db, &id, &InvertedListValue {entries_array: Vec::new()}, lmdb::put::Flags::empty())?;
+                for cluster in ids {
+                    access.put(&db, cluster, &InvertedListValue {entries_array: Vec::new()}, lmdb::put::Flags::empty())?;
+                }
+                
             }
 
             txn.commit()?;
@@ -57,9 +58,9 @@ impl InvertedList {
     }
 
 
-    pub fn add_vector(&self, vec_id: VectorId, cluster_id: ClusterId) -> Result<(), Error> {
+    pub fn add_vector(&self, vec_id: VecId, cluster_id: ClusterId) -> Result<(), Error> {
         // check the vector exists in PQCodes and take its PQCode / PQCodeId
-        let pq_code_id: PQCodeId = todo!();
+        let pq_code: Vec<ClusterId> = todo!();
         
         
         let db = lmdb::Database::open(
@@ -76,7 +77,7 @@ impl InvertedList {
             cluster_entry = access.get(&db, &cluster_id)?;
             cluster_entry.entries_array.push(InvertedListInnerValue {
                 vec_id,
-                pq_code_id
+                pq_code
             });
 
         }
@@ -96,19 +97,19 @@ impl InvertedList {
 
     }
 
-    pub fn batch_add_vector(&self, vec_ids: &[VectorId], cluster_id: ClusterId) -> Result<(), Error> {
+    pub fn batch_add_vector(&self, vec_ids: &[VecId], cluster_id: ClusterId) -> Result<(), Error> {
         todo!()
     }
 
-    pub fn delete_vector(&self, vec_id: VectorId, cluster_id: ClusterId) -> Result<VectorId, Error> {
+    pub fn delete_vector(&self, vec_id: VecId, cluster_id: ClusterId) -> Result<VecId, Error> {
         todo!()
     }
 
-    pub fn batch_delete_vector(&self, vec_ids: &[VectorId], cluster_id: ClusterId) -> Result<Vec<VectorId>, Error> {
+    pub fn batch_delete_vector(&self, vec_ids: &[VecId], cluster_id: ClusterId) -> Result<Vec<VecId>, Error> {
         todo!()
     }
 
-    pub fn transfer_vector(&self, vec_id: VectorId, source_cluster_id: ClusterId, target_cluster_id: ClusterId) -> Result<(), Error> {
+    pub fn transfer_vector(&self, vec_id: VecId, source_cluster_id: ClusterId, target_cluster_id: ClusterId) -> Result<(), Error> {
         todo!()
     }
 

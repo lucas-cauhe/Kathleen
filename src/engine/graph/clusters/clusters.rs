@@ -11,13 +11,13 @@
     // - ADDITIONAL INFO TO COMPUTE SIMILARITY BETWEEN CLUSTERS
 
 
-pub struct Cluster {
+/* pub struct Cluster {
     pub id: u32,
     //boundaries: 
     pub embeddings: Vec<Embedding>,
     pub connections: Vec<Rc<dyn Path>>,
     // additionals
     
-}
+} */
 
 

@@ -2,13 +2,56 @@
 use lmdb::{self, Error, Environment};
 use std::env;
 
-use crate::engine::indexing::mem::mem::Move;
+use crate::engine::{indexing::mem::mem::Move, utils::pq::train::Codebook};
 
-pub static CTX: Vec<lmdb::Environment> = Vec::new();
+use super::{inverted_list::InvertedList, DBInterface};
 const GENERIC_PATH: String = env::var("DB_STORAGE").unwrap();
+pub struct Context {
+    inverted_list: InvertedList,
+    codebook: Codebook,
+    //coarse_quantizer: 
+}
+
+// Function ran during initialization
+
+pub fn load_context() -> Result<Context, Error> {
+    
+    // use default env to open its dbs and load each Context field
+
+    let env: Environment;
+    unsafe {
+        let builder = lmdb::EnvBuilder::new().unwrap();
+        builder.set_maxdbs(2); // may be 3
+        env = builder.open(GENERIC_PATH.push_str("default.db"),
+        lmdb::open::Flags::empty(),
+        0o600)?;
+    }
+
+    Ok(Context {
+        inverted_list: load_db_instance::<InvertedList>(&env, "inverted_list")?,
+        codebook: load_db_instance::<Codebook>(&env, "codebook")?
+    })
+}
+
+
+pub fn load_db_instance<DBInstance>(env: &Environment, db_name: &str) -> Result<DBInstance, Error> 
+where
+    DBInstance: DBInterface
+{
+    let db = lmdb::Database::open(&env, Some(db_name), &lmdb::DatabaseOptions::new(lmdb::db::CREATE))?;
+    let instance_init: DBInstance;
+    {
+        let txn = lmdb::ReadTransaction::new(env)?;
+        let access = txn.access();
+
+        instance_init = access.get(&db, "default")?;
+    }
+    Ok(instance_init)
+}
+
 
 // MIGRATIONS??
-
+/* 
 pub fn create_env() -> Result<&'static Environment, Error> {
     // create env
 
@@ -58,3 +101,4 @@ pub fn insert_named(containers: &[Box<dyn Move>], env: &Environment) -> Result<(
 
     Ok(())
 }
+*/

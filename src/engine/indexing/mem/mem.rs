@@ -20,13 +20,12 @@
 use std::{collections::HashMap, io};
 use std::fs;
 use crate::engine::graph::clusters::clusters::Cluster;
+use crate::engine::utils::types::{ContainerId, ClusterId};
 use crate::{tokenizer::tokenize::Embedding, engine::indexing::index::RepoFlat};
 
 use lmdb::{self, Environment, Error};
 use crate::engine::indexing::db::ctx::{CTX, create_env, insert_named};
 
-type ContainerId = i32;
-type ClusterId = i32;
 
 // MemInstance will be dropped when required: merging data to db, after performing KNN, (more when working with clusters)
 pub struct MemInstance {

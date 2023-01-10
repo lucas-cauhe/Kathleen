@@ -8,4 +8,5 @@ edition = "2021"
 [dependencies]
 lmdb-zero = "0.4.4"
 dotenv = "0.15.0"
-reductive = { version = "0.7", features = ["opq-train"] }
+reductive = "0.9"
+ndarray = "0.15"
