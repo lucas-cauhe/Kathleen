@@ -1,4 +1,5 @@
-use crate::tokenizer::tokenize::Embedding;
+
+use crate::{tokenizer::tokenize::Embedding, engine::indexing::db::search::DistanceFunction};
 
 
 
@@ -9,6 +10,13 @@ pub type ContainerId = usize;
 pub type PQCodeId = usize;
 
 pub struct KNN {
-    k: usize,
-    embeddings: Vec<Embedding>
+    pub k: usize,
+    pub embeddings: Vec<ResultEmbedding>,
+    pub cluster: ClusterId
 }
+
+pub struct ResultEmbedding {
+    pub embedding: Embedding,
+    pub distance_to_query: DistanceFunction
+}
+

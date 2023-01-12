@@ -2,7 +2,7 @@
 use lmdb::{self, Error, Environment};
 use std::env;
 
-use crate::engine::{indexing::mem::mem::Move, utils::pq::train::Codebook};
+use crate::{engine::{indexing::mem::mem::Move, utils::{pq::train::Codebook, types::ClusterId}}, tokenizer::tokenize::Embedding};
 
 use super::{inverted_list::InvertedList, DBInterface};
 const GENERIC_PATH: String = env::var("DB_STORAGE").unwrap();
@@ -10,11 +10,44 @@ pub struct Context {
     inverted_list: InvertedList,
     codebook: Codebook,
     //coarse_quantizer: 
+    pub distance_function: Box<dyn DFUtility> // Box<dyn Trait> since you want to own the unmutable value, and have dynamic dispatch 
+    // because it won't be changing in runtime
+}
+
+impl Context {
+    pub fn get_centroid(&self, cluster_id: ClusterId) -> &Embedding {
+        self.codebook.get_embedding(cluster_id)
+    }
+}
+
+pub enum DistanceFunctionSelection {
+    Cosine,
+    Euclidean
+}
+
+struct CosineDistFn;
+struct DefaultDistFn;
+
+// make it generic for a & b params (consider f32 Ord case)
+pub trait DFUtility {
+    fn nearest(&self, a: i32, b: i32) -> i32;
+}
+
+impl DFUtility for CosineDistFn {
+    fn nearest(&self, a: i32, b: i32) -> i32 {
+        i32::max(a, b)
+    }
+}
+
+impl DFUtility for DefaultDistFn {
+    fn nearest(&self, a: i32, b: i32) -> i32 {
+        i32::min(a, b)
+    }
 }
 
 // Function ran during initialization
 
-pub fn load_context() -> Result<Context, Error> {
+pub fn load_context(df: &DistanceFunctionSelection) -> Result<Context, Error> {
     
     // use default env to open its dbs and load each Context field
 
@@ -29,7 +62,11 @@ pub fn load_context() -> Result<Context, Error> {
 
     Ok(Context {
         inverted_list: load_db_instance::<InvertedList>(&env, "inverted_list")?,
-        codebook: load_db_instance::<Codebook>(&env, "codebook")?
+        codebook: load_db_instance::<Codebook>(&env, "codebook")?,
+        distance_function: match df {
+            DistanceFunctionSelection::Cosine => CosineDistFn,
+            _ => DefaultDistFn
+        }
     })
 }
 
