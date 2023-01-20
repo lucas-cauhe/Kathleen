@@ -30,6 +30,7 @@ pub fn search_many<T>(query_vectors: &[Embedding], ctx: &Context, k: usize) -> R
     
     let similarity_table: ArrayBase<OwnedRepr<T>, Dim<[usize; 2]>> = Array::zeros((query_vectors.len(), ctx.get_total_clusters()));
     let search_results: Vec<Option<KNN>> = vec![None; query_vectors.len()];
+    // here multiple threads could be tasked with searching one each
     for (index, query) in query_vectors.iter().enumerate() {
         search_results[index] = Some(search_one(query, ctx, k)?);
         compute_similarity(&search_results[index], ctx, &similarity_table.row(index));
@@ -55,27 +56,6 @@ fn compute_similarity<T>(neighbors: &KNN, ctx: &Context, similarity_table: &[T])
     todo!()
 }
 
-pub enum DistanceFunctionEnum {
-    Cosine,
-    Euclidean,
-}
-
-pub struct DistanceFunction{
-    function: DistanceFunctionEnum
-}
-
-impl DistanceFunction {
-    pub fn nearest_cluster<T>(&self, columns_sum: &[T]) -> usize {
-        match self.function {
-            DistanceFunctionEnum::Cosine => {
-
-            },
-            DistanceFunctionEnum::Euclidean => {
-
-            }
-        }
-    }
-}
 
 // Embedding has to include a field where to specify its similarity to a given query vector -> Design ResultEmbedding
 pub fn most_similar_to_respectives(matches: &[Option<KNN>], df: &dyn DFUtility) -> Option<KNN> {

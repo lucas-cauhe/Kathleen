@@ -1,5 +1,5 @@
 
-use crate::{tokenizer::tokenize::Embedding, engine::indexing::db::search::DistanceFunction};
+use crate::{tokenizer::tokenize::Embedding, engine::indexing::db::ctx::DFUtility};
 
 
 
@@ -17,6 +17,6 @@ pub struct KNN {
 
 pub struct ResultEmbedding {
     pub embedding: Embedding,
-    pub distance_to_query: DistanceFunction
+    pub distance_to_query: Box<dyn DFUtility>
 }
 

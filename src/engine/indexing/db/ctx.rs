@@ -1,24 +1,39 @@
 
 use lmdb::{self, Error, Environment};
-use std::env;
+use std::{env, rc::Rc};
 
 use crate::{engine::{indexing::mem::mem::Move, utils::{pq::train::Codebook, types::ClusterId}}, tokenizer::tokenize::Embedding};
 
-use super::{inverted_list::InvertedList, DBInterface};
+use super::{inverted_list::InvertedList, DBInterface, vector_storage::EmbeddingHolder};
 const GENERIC_PATH: String = env::var("DB_STORAGE").unwrap();
 pub struct Context {
+
+    // env: Environment,
+    // the environment where context will hold its data will be the same in all of the fields that require 
+    // db interaction
     inverted_list: InvertedList,
     codebook: Codebook,
-    //coarse_quantizer: 
+    //coarse_quantizer:
+    // if multiple searches are made, its unnecesary to keep loading embeddings while they're being used
+    // multiple queries can access same cluster embeddings (consider this in a threaded scenario)
+
+    // therefore makes no sense to keep the environment's database for the embeddings open if its being held here
+    // whenever you cache the embeddings from an environment you must remove the database from memory, otherwise it is nonsense
+    // For this being efficient, context has to be shared among all different 'utilities' (different users making different queries)
+    loaded_clusters: Vec<Option<Rc<EmbeddingHolder>>>,
     pub distance_function: Box<dyn DFUtility> // Box<dyn Trait> since you want to own the unmutable value, and have dynamic dispatch 
     // because it won't be changing in runtime
+    
 }
 
 impl Context {
     pub fn get_centroid(&self, cluster_id: ClusterId) -> &Embedding {
         self.codebook.get_embedding(cluster_id)
     }
+
 }
+
+
 
 pub enum DistanceFunctionSelection {
     Cosine,
@@ -60,9 +75,14 @@ pub fn load_context(df: &DistanceFunctionSelection) -> Result<Context, Error> {
         0o600)?;
     }
 
+    let inverted_list = load_db_instance::<InvertedList>(&env, "inverted_list")?;
+    let codebook = load_db_instance::<Codebook>(&env, "codebook")?;
+
     Ok(Context {
-        inverted_list: load_db_instance::<InvertedList>(&env, "inverted_list")?,
-        codebook: load_db_instance::<Codebook>(&env, "codebook")?,
+        env,
+        inverted_list,
+        codebook,
+        loaded_clusters: vec![None; codebook.get_size()],
         distance_function: match df {
             DistanceFunctionSelection::Cosine => CosineDistFn,
             _ => DefaultDistFn
