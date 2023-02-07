@@ -1,4 +1,6 @@
 
+use rdb::{SingleThreaded, DBWithThreadMode};
+
 use crate::{tokenizer::tokenize::Embedding, engine::indexing::db::ctx::DFUtility};
 
 
@@ -8,6 +10,8 @@ pub type SegmentId = usize;
 pub type ClusterId = usize;
 pub type ContainerId = usize;
 pub type PQCodeId = usize;
+
+pub type DBInstance = DBWithThreadMode<SingleThreaded>;
 
 pub struct KNN {
     pub k: usize,

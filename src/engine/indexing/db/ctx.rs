@@ -1,18 +1,28 @@
 
-use lmdb::{self, Error, Environment};
+
 use std::{env, rc::Rc};
 
-use crate::{engine::{indexing::mem::mem::Move, utils::{pq::train::Codebook, types::ClusterId}}, tokenizer::tokenize::Embedding};
+use futures::Future;
+use queues::{IsQueue, Queue};
+use rdb::{ColumnFamily, Error, DB, DBAccess};
 
-use super::{inverted_list::InvertedList, DBInterface, vector_storage::EmbeddingHolder};
+use crate::{engine::{utils::{pq::train::Codebook, types::{ClusterId, VecId}}, indexing::ivf_controller::ActionFuture}, tokenizer::tokenize::Embedding};
+
+use super::{inverted_list::InvertedList, DBInterface, vector_storage::{EmbeddingHolder, SegmentHolder}, dbaccess::DbAccess};
 const GENERIC_PATH: String = env::var("DB_STORAGE").unwrap();
 pub struct Context {
 
-    // env: Environment,
+    db_path: String,
     // the environment where context will hold its data will be the same in all of the fields that require 
     // db interaction
     inverted_list: InvertedList,
     codebook: Codebook,
+    accessor: DbAccess,
+
+    pending_actions_queue: Vec<Queue<ActionType>>,
+    // actions_processing will be awaken whenever queued_actions > 0
+    queued_actions: i32,
+    
     //coarse_quantizer:
     // if multiple searches are made, its unnecesary to keep loading embeddings while they're being used
     // multiple queries can access same cluster embeddings (consider this in a threaded scenario)
@@ -20,16 +30,116 @@ pub struct Context {
     // therefore makes no sense to keep the environment's database for the embeddings open if its being held here
     // whenever you cache the embeddings from an environment you must remove the database from memory, otherwise it is nonsense
     // For this being efficient, context has to be shared among all different 'utilities' (different users making different queries)
-    loaded_clusters: Vec<Option<Rc<EmbeddingHolder>>>,
-    pub distance_function: Box<dyn DFUtility> // Box<dyn Trait> since you want to own the unmutable value, and have dynamic dispatch 
+    // Perhaps use TTL from rdb
+    
+    pub distance_function: Box<dyn DFUtility>, // Box<dyn Trait> since you want to own the unmutable value, and have dynamic dispatch 
     // because it won't be changing in runtime
+
+    pub dbs_names: Vec<String>
     
 }
 
+
+
+#[derive(Clone)]
+pub enum ActionType
+{
+    Load{
+        embeddings: Vec<VecId>,
+        cluster: ClusterId
+    },
+    Dump{
+        embeddings: Vec<VecId>,
+        cluster: ClusterId
+    }
+}
+
+// pub trait Load {}
+pub trait Dump {}
+
+
+
+///	_Function for running the actions processing logic_
+///
+///	# _Arguments_
+///
+/// * `queues` - __
+pub fn actions_processing(queues: &[Queue<ActionType>], processing_time: i32) -> usize {
+    todo!()
+}
+
 impl Context {
+
+    pub fn new() -> Context {
+        Context { inverted_list: (), codebook: (), loaded_clusters: (), distance_function: () }
+    }
+
+    
+    
+    pub fn get_ready(&mut self, act_type: &ActionType) -> ActionFuture {
+        // implement a future such that:
+        // if the segments to be loaded are cached then it is ready
+        // otherwise wait to be awaken and deque action
+
+        // checked in dbaccess whether act_type segments are cached
+        // if true return a cb somehow, specific to return Poll::Ready() on future (without queing)
+        // else return a different cb, specific to return Poll::Pending and wait (queing (dequeing is done by actions_processing thread))
+
+
+        // queue action somewhere but not inside the callback
+        // since mutex won't make sense then
+        let action_future = ActionFuture::new();
+        action_future.set_cb(|cx| {
+            match self.accessor.get_cached(act_type) {
+                Some(resp) => {
+                    Some(resp)
+                },
+                None => {
+                    // specify how to wake the thread
+                    cx.waker();
+                }
+            }
+        })
+
+    }
+
+    fn queue_action(&mut self, act_type: &ActionType) -> () {
+        todo!()
+    }
+
+    pub fn load_embeddings(&self, act_type: ActionType) -> Result<Rc<EmbeddingHolder>, Error> {
+        let token = self.add_action(&act_type)?;
+        self.response(token)?
+    }
+    pub fn dump_embeddings()
+
     pub fn get_centroid(&self, cluster_id: ClusterId) -> &Embedding {
         self.codebook.get_embedding(cluster_id)
     }
+
+    pub fn load_cluster(&mut self, cluster: &ClusterId) -> Result<Rc<EmbeddingHolder>, Error> {
+        
+        match self.loaded_clusters[*cluster] {
+            Some(eh) => {
+                // return cached (in use or not-expired TTL) eh
+                // when dropping last reference to any EH, start a TTL
+
+                Ok(Rc::clone(&eh))
+                
+            },
+            None => {
+                // cache new loaded embedding holder
+                let db = DB::open(&self.db_opts, &self.dbs_names[*cluster])?;
+
+                let new_eh = EmbeddingHolder::new(&db);
+                new_eh.load(&[])?;
+                self.loaded_clusters[*cluster] = Some(Rc::new(new_eh));
+                Ok(Rc::clone(&self.loaded_clusters[*cluster].unwrap()))
+            }
+        }
+    }
+
+    
 
 }
 
@@ -66,7 +176,7 @@ pub fn load_context(df: &DistanceFunctionSelection) -> Result<Context, Error> {
     
     // use default env to open its dbs and load each Context field
 
-    let env: Environment;
+    let env: ColumnFamily;
     unsafe {
         let builder = lmdb::EnvBuilder::new().unwrap();
         builder.set_maxdbs(2); // may be 3
@@ -90,72 +200,3 @@ pub fn load_context(df: &DistanceFunctionSelection) -> Result<Context, Error> {
     })
 }
 
-
-pub fn load_db_instance<DBInstance>(env: &Environment, db_name: &str) -> Result<DBInstance, Error> 
-where
-    DBInstance: DBInterface
-{
-    let db = lmdb::Database::open(&env, Some(db_name), &lmdb::DatabaseOptions::new(lmdb::db::CREATE))?;
-    let instance_init: DBInstance;
-    {
-        let txn = lmdb::ReadTransaction::new(env)?;
-        let access = txn.access();
-
-        instance_init = access.get(&db, "default")?;
-    }
-    Ok(instance_init)
-}
-
-
-// MIGRATIONS??
-/* 
-pub fn create_env() -> Result<&'static Environment, Error> {
-    // create env
-
-    let env = unsafe {
-        let tmp_env = lmdb::EnvBuilder::new().unwrap();
-        tmp_env.set_maxdbs( 2);
-        tmp_env.
-        open(
-          GENERIC_PATH.as_str(), 
-          lmdb::open::Flags::empty(), 
-          0o600).unwrap()
-    };
-
-    // plug it into CTX
-    CTX.push(env);
-
-    // return reference to CTX's
-    Ok(CTX.get(CTX.len()-1).unwrap())
-}
-
-pub fn read() -> () {
-    todo!()
-}
-
-
-pub fn delete() -> () {
-    todo!()
-}
-
-pub fn insert_named(containers: &[Box<dyn Move>], env: &Environment) -> Result<(), Error> {
-    // 1 repo object links to 1 embedding
-    let objs_db = lmdb::Database::open(env, Some(&"Objs".to_string()), &lmdb::DatabaseOptions::create_map()).unwrap();
-    let embeddings_db = lmdb::Database::open(env, Some(&"Embeddings".to_string()), &lmdb::DatabaseOptions::create_map()).unwrap();
-
-    {
-        let txn = lmdb::WriteTransaction::new(&env).unwrap();
-
-        {
-            let mut access = txn.access();
-            for container in containers {
-                access.put(&objs_db, &container.get_key(), &container.get_object(), lmdb::put::Flags::empty()).unwrap();
-                access.put(&objs_db, &container.get_key(), &container.get_embedding(), lmdb::put::Flags::empty()).unwrap();
-            }
-        }
-        txn.commit().unwrap();
-    }
-
-    Ok(())
-}
-*/

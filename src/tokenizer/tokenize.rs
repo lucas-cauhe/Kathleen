@@ -33,8 +33,10 @@
 
 //    WITH IVF REPOS WILL BE TOKENIZED  WITH A NET THAT COULD REPRESENT THE ESSENCE OF A REPO (LIKE A CNN OR GloVe APPROACHES)
 
+use serde::{Serialize, Deserialize};
 
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Embedding {
     
 }

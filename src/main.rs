@@ -1,5 +1,11 @@
-extern crate lmdb_zero as lmdb;
+extern crate rocksdb as rdb;
 extern crate dotenv;
+extern crate serde;
+extern crate serde_json;
+extern crate futures;
+
+#[macro_use]
+extern crate queues;
 
 
 mod engine;

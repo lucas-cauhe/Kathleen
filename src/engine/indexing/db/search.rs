@@ -1,5 +1,9 @@
 
+use std::rc::Rc;
+
 use ndarray::{self,Array, ArrayBase, OwnedRepr, Dim};
+
+use rdb::DB;
 
 // 1. partition query vector
 //  2. find nearest partition centroid
@@ -14,14 +18,29 @@ use ndarray::{self,Array, ArrayBase, OwnedRepr, Dim};
 
 use crate::{tokenizer::tokenize::Embedding, engine::utils::types::{KNN, ResultEmbedding}};
 
-use super::{DBInterface, ctx::{Context, DFUtility}};
+use super::{DBInterface, ctx::{Context, DFUtility}, vector_storage::EmbeddingHolder};
 
 
 pub fn search_one(query_vector: &Embedding, ctx: &Context, k: usize) -> Result<KNN, String> {
     
     query_vector.partition(ctx.k);
 
-    todo!()
+    // Compute residuals
+
+    // Compute cluster belonging
+    let cluster;
+
+    // Compute ADC
+    let adc;
+
+    // Search in cluster
+
+        // open database relative to computed cluster
+    
+    let db = DB::open(ctx.db_opts, ctx.cfs_names[cluster])?;
+    let holder: Rc<EmbeddingHolder> = ctx.load_cluster(&cluster)?;
+    
+    heap_search(holder, adc, k)
 
 }
 

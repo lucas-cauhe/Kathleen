@@ -5,36 +5,53 @@
 // Divide each vector into k sub spaces
 // Find nearest centroid
 
+
 use std::{rc::Rc, collections::HashMap};
 
-use lmdb_zero::{Environment, Error};
 
+use rdb::ColumnFamilyDescriptor;
+use rdb::DB;
+use rdb::DBCommon;
+use rdb::Error;
+use rdb::ColumnFamily;
+use rdb::Options;
+use serde::de::DeserializeOwned;
+
+use crate::engine::indexing::ivf_controller::ResponseResult;
+use crate::engine::utils::get_serialized;
+use crate::engine::utils::types::ClusterId;
+use crate::engine::utils::types::DBInstance;
 use crate::{tokenizer::tokenize::Embedding, engine::utils::types::{VecId, SegmentId}};
-use super::{DBInterface, Load, Dump};
+use super::DBConfig;
+use super::ctx::ActionType;
 
 
+use serde::{Deserialize, Serialize};
 
 // SegmentContainers will initially be inside each cluster environment but should be in a global scope 
 // so that many embeddings' subspaces match many segments
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SegmentContainer {
-    
     segment: Embedding,
     segment_id: SegmentId,
 }
 
 pub struct SegmentHolder {
-    env: Environment,
-    // in the given environment, all segments in segments are currently being reference by some embedding
+    // in the given column family, all segments in segments are currently being reference by some embedding
     // the access to each segment container must be instant or else it would be easier to load at every time a new segment -> HashMap
 
     // this should not be a RefCell since EC trying to access this SH mustn't mutate the SC itself, but perhaps the state of the hashmap
     // via SH's interface
-    segments: HashMap<SegmentId,Rc<SegmentContainer>> 
+    segments: HashMap<SegmentId,Rc<SegmentContainer>>,
 }
 
-
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbeddingContainer {
     embedding_id: VecId,
+    segments: Vec<SegmentId>,
+
+    #[serde(skip_serializing)]
+    #[serde(skip_deserializing)]
     refered_segments: Vec<Rc<SegmentContainer>>
 }
 // Why should the embedding holder keep already loaded embeddings while being in use
@@ -42,8 +59,7 @@ pub struct EmbeddingContainer {
 // 1. Act as cache
 // 2. If there's a search being done while 
 pub struct EmbeddingHolder {
-    env: Environment,
-    embeddings: Option<Vec<EmbeddingContainer>>
+    embeddings: HashMap<VecId, EmbeddingContainer>
 }
 
 impl EmbeddingHolder {
@@ -52,7 +68,11 @@ impl EmbeddingHolder {
     // embedding will be added one at a time in order to check for duplicates (and not really add it) or consider some merging
     // in the case one given db segment is almost identical to another trying to get added
 
-    
+    pub fn new() -> Self {
+        EmbeddingHolder { 
+            embeddings: HashMap::new()
+        }
+    }
 
     pub fn add_embedding(&self, embedding: &usize) -> Result<(), Error> {
         todo!()
@@ -80,11 +100,13 @@ impl EmbeddingHolder {
 }
 
 // the db context is telling you to load the required embeddings to perform some operations
-impl Load for EmbeddingHolder {
+/* impl Load for EmbeddingHolder {
     // loads the embeddings from the embeddingHolder's env into embeddings if they haven't been already loaded
-    fn load(&mut self) -> Result<Self, Error> {
+    fn load(&mut self) -> Result<(), Error> {
         
         // fetch embeddings from db
+
+        
 
             // if the embeddingHolder embeddings field is not None => return those
 
@@ -97,9 +119,9 @@ impl Load for EmbeddingHolder {
 
         // if the embeddingHolder embeddings field was None => update it
         // return an updated version of yourself since the embeddingHolder for an env is cached in the context
-
+        todo!()
     }
-}
+} */
 
 // whenever an embeddingHolder is no longer wanted to be cached in the context, it must be dumped
 // to the db since it might have changed over the period of its usage
@@ -119,18 +141,25 @@ impl Drop for EmbeddingHolder {
 
 impl SegmentHolder {
 
-
+    pub fn new() -> Self {
+        SegmentHolder { 
+            segments: HashMap::new()
+        }
+    }
 
     pub fn not_cached(&self, segments: &[SegmentId]) -> Option<Vec<SegmentId>> {
-        let not_cached_segments: Vec<SegmentId> = segments.iter().filter(|s_id| !self.segments.contains_key(*s_id)).collect();
+        let not_cached_segments: Vec<SegmentId> = segments.iter().filter(|s_id| !self.segments.contains_key(*s_id)).map(|s_id| s_id.to_owned()).collect();
         match not_cached_segments.len() {
             0 => None,
             _ => Some(not_cached_segments)
         }
     }
 
-    pub fn update_cache(&mut self, container: SegmentContainer) -> () {
-        self.segments.insert(container.segment_id, Rc::new(container));
+    pub fn update_cache(&mut self, containers: &[SegmentContainer]) -> () {
+        for container in containers {
+            self.segments.insert(container.segment_id, Rc::new(*container));
+        }
+        
     }
 
     pub fn cached_segments(&self, segments: &[SegmentId]) -> Vec<Rc<SegmentContainer>> {
@@ -145,8 +174,8 @@ impl SegmentHolder {
 }
 
 
-impl Load for SegmentHolder {
-    fn load(&mut self, segments: &[SegmentId], from_caller: &impl Load) -> Result<(), Error> {
+/* impl Load for SegmentHolder {
+    fn load(&mut self, segments: &[SegmentId]) -> Result<(), Error> {
         
         // fetch segments from db
             
@@ -154,37 +183,32 @@ impl Load for SegmentHolder {
         
             // otherwise take them from the db and create new entries in the db with their ids.
         if let Some(uncached) = self.not_cached(segments) {
-            let db = lmdb::Database::open(
-                &self.env, Some("segments"), &lmdb::DatabaseOptions::new(lmdb::db::CREATE))?;
+
             
-            {
-                let txn = lmdb::WriteTransaction::new(&self.env)?;
-                let access = txn.access();
-
-                for new_segment_id in uncached {
-                    let loaded_segment: Embedding = access.get(&db, &new_segment_id)?;
-                    let segment = SegmentContainer::new(&loaded_segment, &new_segment_id);
-                    self.update_cache(segment);
-                }
-
-                
-            }
-            // is memory cleaned when db is dropped??
+            let db = DB::open_cf(&self.db_opts, path.to_string(), &[self.cf])?;
+            match get_serialized::<Vec<SegmentContainer>>(&db, &self.cf, "segments") {
+                Ok(all_segments) => {
+                    match all_segments {
+                        Some(segments) => {
+                            self.update_cache(segments.filter(|s| uncached.contains(&s.segment_id)).into());
+                        },
+                        None => Error { message: "No segments in segments column family".to_string() }
+                    }
+                },
+                Err(e) => Error { message: "Load failed".to_string() }
+            };
             
         }
-        
-        // bound references to the load caller
-        from_caller.bind(self.cached_segments(segments));
 
         Ok(())
     }
 }
-
+ */
 
 
 impl SegmentContainer {
 
-    pub fn new(segment: Embedding, segment_id: &SegmentId) -> SegmentContainer {
+    pub fn new(segment: &Embedding, segment_id: &SegmentId) -> SegmentContainer {
         SegmentContainer { segment, segment_id }
     }
 
@@ -198,4 +222,40 @@ impl SegmentContainer {
     
 
 }
+
+
+
+pub struct DbAccess {
+    embedding_holder: EmbeddingHolder,
+    segment_holder: SegmentHolder,
+    shards: Vec<DBConfig>
+}
+
+impl DbAccess {
+
+    pub fn new() -> Self {
+        DbAccess { 
+            embedding_holder: EmbeddingHolder::new(), 
+            segment_holder: SegmentHolder::new(),
+            shards: Vec::new()
+        }
+    }
+
+    pub fn load(&mut self, embeddings: &[VecId], cluster: ClusterId) -> Result<Vec<Rc<EmbeddingContainer>>, Error> {
+        
+    }
+
+    pub fn dump(&mut self, embeddings: &[VecId], cluster: ClusterId) -> Result<(), Error> {
+        self.embedding_holder.dump()
+    }
+
+    // if all segments requested to load are cached already
+    // return them, otherwise return None
+    // ALL segments must be cached if any is missing then it must return None
+    pub fn get_cached(act_type: ActionType) -> Option<ResponseResult> {
+        todo!()
+    }
+
+}
+
 
