@@ -75,23 +75,9 @@ pub struct Dump {}
 impl InternalAction for Load {}
 impl InternalAction for Dump {}
 
-// impl InternalAction for Load {
-//     fn response(&self, token: (usize, usize)) -> Result<ResponseResult, Error> {
-//         // wait for the action with token <token> be completed
-//         //ResponseResult::Load(res);
-//     }
-// }
-
-// impl InternalAction for Dump {
-//     fn response(&self, token: (usize, usize)) -> Result<ResponseResult, Error> {
-//         // wait for the action with token <token> be completed
-//         todo!()
-//     }
-// }
-
 impl Load {
     pub fn load(&self, ctx: Arc<RefCell<Context>>, embeddings: &[VecId], cluster: &ClusterId) -> Result<Arc<EmbeddingHolder>, Error> {
-        let response = block_on(self.add_action(ctx, &ActionType::Load { embeddings, cluster }));
+        let response = self.add_action(ctx, &ActionType::Load { embeddings, cluster });
         match response {
             Ok(res) => {
                 match res {
@@ -106,7 +92,7 @@ impl Load {
 
 impl Dump {
     pub fn dump(&self, ctx: Arc<RefCell<Context>>, embeddings: &[VecId], cluster: &ClusterId) -> Result<(), Error> {
-        let response = block_on(self.add_action(ctx, &ActionType::Dump { embeddings, cluster }));
+        let response = self.add_action(ctx, &ActionType::Dump { embeddings, cluster });
         match response {
             Ok(res) => {
                 match res {
