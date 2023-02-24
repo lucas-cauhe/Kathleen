@@ -1,5 +1,6 @@
 pub mod pq;
 pub mod types;
+pub mod concurrency;
 
 use rdb::ColumnFamily;
 use serde::{de::DeserializeOwned, Serialize};

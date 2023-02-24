@@ -14,3 +14,4 @@ serde = {version="1.0.152", features=["derive"]}
 serde_json = "1.0.91"
 queues = "1.1.0"
 futures = "0.3.26"
+std-semaphore = "0.1.0"

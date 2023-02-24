@@ -1,14 +1,12 @@
 
 
-use std::{env, rc::Rc};
+use std::{env, sync::{Mutex, Arc, mpsc::{Sender, channel}}, thread};
 
-use futures::Future;
 use queues::{IsQueue, Queue};
-use rdb::{ColumnFamily, Error, DB, DBAccess};
 
-use crate::{engine::{utils::{pq::train::Codebook, types::{ClusterId, VecId}}, indexing::ivf_controller::ActionFuture}, tokenizer::tokenize::Embedding};
+use crate::{engine::{utils::{pq::train::Codebook, types::{ClusterId, VecId}, concurrency::Context2Thread}, indexing::{ivf_controller::{ActionFuture, ActionWaker}, threads::{ActionsProcessingThread, CommonThread}}}};
 
-use super::{inverted_list::InvertedList, DBInterface, vector_storage::{EmbeddingHolder, SegmentHolder}, dbaccess::DbAccess};
+use super::{inverted_list::InvertedList, dbaccess::DbAccess};
 const GENERIC_PATH: String = env::var("DB_STORAGE").unwrap();
 pub struct Context {
 
@@ -19,9 +17,10 @@ pub struct Context {
     codebook: Codebook,
     accessor: DbAccess,
 
-    pending_actions_queue: Vec<Queue<ActionType>>,
+    pending_actions_queue: Vec<Mutex<Queue<Arc<Mutex<ActionWaker>>>>>,  // Vec<Queue<Rc<Mutex<ActionWaker>>>>,
     // actions_processing will be awaken whenever queued_actions > 0
-    queued_actions: i32,
+    queued_actions:Arc<Mutex<(i32, i32)>>,
+    senders: (Sender<i32>, Sender<i32>),
     
     //coarse_quantizer:
     // if multiple searches are made, its unnecesary to keep loading embeddings while they're being used
@@ -34,9 +33,6 @@ pub struct Context {
     
     pub distance_function: Box<dyn DFUtility>, // Box<dyn Trait> since you want to own the unmutable value, and have dynamic dispatch 
     // because it won't be changing in runtime
-
-    pub dbs_names: Vec<String>
-    
 }
 
 
@@ -56,27 +52,36 @@ pub enum ActionType
 
 // pub trait Load {}
 pub trait Dump {}
-
-
-
-///	_Function for running the actions processing logic_
-///
-///	# _Arguments_
-///
-/// * `queues` - __
-pub fn actions_processing(queues: &[Queue<ActionType>], processing_time: i32) -> usize {
-    todo!()
-}
-
 impl Context {
 
     pub fn new() -> Context {
-        Context { inverted_list: (), codebook: (), loaded_clusters: (), distance_function: () }
+        let pending_actions_queue = Vec::new();
+        let ch1 = channel::<i32>();
+        let ch2 = channel::<i32>();
+        let queued_actions = Arc::new(Mutex::new((0, 0)));
+        let act_processing_thr = ActionsProcessingThread::new(
+            &pending_actions_queue,
+            Context2Thread::new(ch1.1, ch2.1),
+            queued_actions.clone()
+        );
+
+        thread::spawn(act_processing_thr.task());
+
+        Context { 
+            db_path: String::from(GENERIC_PATH),
+            inverted_list: InvertedList::new(), 
+            codebook: Codebook::new(), 
+            accessor: DbAccess::new(),
+            pending_actions_queue,
+            queued_actions,
+            senders: (ch1.0, ch2.0),
+            distance_function: CosineDistFn::new()
+        }
     }
 
     
     
-    pub fn get_ready(&mut self, act_type: &ActionType) -> ActionFuture {
+    pub fn dispatch_future(&mut self, act_type: &ActionType) -> ActionFuture {
         // implement a future such that:
         // if the segments to be loaded are cached then it is ready
         // otherwise wait to be awaken and deque action
@@ -84,63 +89,59 @@ impl Context {
         // checked in dbaccess whether act_type segments are cached
         // if true return a cb somehow, specific to return Poll::Ready() on future (without queing)
         // else return a different cb, specific to return Poll::Pending and wait (queing (dequeing is done by actions_processing thread))
-
-
-        // queue action somewhere but not inside the callback
-        // since mutex won't make sense then
-        let action_future = ActionFuture::new();
-        action_future.set_cb(|cx| {
-            match self.accessor.get_cached(act_type) {
-                Some(resp) => {
-                    Some(resp)
-                },
-                None => {
-                    // specify how to wake the thread
-                    cx.waker();
-                }
+        let mut action_waker: Arc<Mutex<ActionWaker>>; 
+        match self.accessor.get_cached(act_type) {
+            Some(resp) => {
+                action_waker = Arc::new(Mutex::new(ActionWaker::new(act_type, Some(resp))));
             }
-        })
-
-    }
-
-    fn queue_action(&mut self, act_type: &ActionType) -> () {
-        todo!()
-    }
-
-    pub fn load_embeddings(&self, act_type: ActionType) -> Result<Rc<EmbeddingHolder>, Error> {
-        let token = self.add_action(&act_type)?;
-        self.response(token)?
-    }
-    pub fn dump_embeddings()
-
-    pub fn get_centroid(&self, cluster_id: ClusterId) -> &Embedding {
-        self.codebook.get_embedding(cluster_id)
-    }
-
-    pub fn load_cluster(&mut self, cluster: &ClusterId) -> Result<Rc<EmbeddingHolder>, Error> {
-        
-        match self.loaded_clusters[*cluster] {
-            Some(eh) => {
-                // return cached (in use or not-expired TTL) eh
-                // when dropping last reference to any EH, start a TTL
-
-                Ok(Rc::clone(&eh))
-                
-            },
             None => {
-                // cache new loaded embedding holder
-                let db = DB::open(&self.db_opts, &self.dbs_names[*cluster])?;
+                action_waker = Arc::new(Mutex::new(ActionWaker::new(act_type, None)));
+                self.queue_action(action_waker.clone());
+            }
+        };
 
-                let new_eh = EmbeddingHolder::new(&db);
-                new_eh.load(&[])?;
-                self.loaded_clusters[*cluster] = Some(Rc::new(new_eh));
-                Ok(Rc::clone(&self.loaded_clusters[*cluster].unwrap()))
+        // Theres no threat that the response might be dropped by the 
+        // context while callback is being called since the counted reference
+        // has already been called
+        
+        ActionFuture::new(action_waker)
+
+    }
+
+    fn queue_action(&mut self, act_type: Arc<Mutex<ActionWaker>>) -> () {
+        let action = act_type.lock().unwrap();
+        match *action.action {
+            ActionType::Load {embeddings, cluster} | ActionType::Dump { embeddings, cluster } => {
+                let queue = self.pending_actions_queue.get(cluster).unwrap();
+                let mutex_queue = queue.lock().unwrap();
+                drop(action);
+                mutex_queue.add(act_type);
             }
         }
+        self.notify_processor();
+        // semaphores check (atomic)
+            // if thread is out -> release trigger sem
+            // if thread is in but still waiting -> if I query the x-th element release no_threads semaphore
+            // if it's not waiting -> add action without any notification
+       
     }
 
+    fn notify_processor(&self) {
     
+        let  (mut count, thres) = self.queued_actions.lock().unwrap();
+        if *count == 0 {
+            self.senders.0.send(1);
+        }
+        *count += 1;
+        if *count == *thres {
+            self.senders.1.send(*thres);
+        }
+    
+    }
 
+    // pub fn get_centroid(&self, cluster_id: ClusterId) -> &Embedding {
+    //     self.codebook.get_embedding(cluster_id)
+    // }
 }
 
 
@@ -169,34 +170,3 @@ impl DFUtility for DefaultDistFn {
         i32::min(a, b)
     }
 }
-
-// Function ran during initialization
-
-pub fn load_context(df: &DistanceFunctionSelection) -> Result<Context, Error> {
-    
-    // use default env to open its dbs and load each Context field
-
-    let env: ColumnFamily;
-    unsafe {
-        let builder = lmdb::EnvBuilder::new().unwrap();
-        builder.set_maxdbs(2); // may be 3
-        env = builder.open(GENERIC_PATH.push_str("default.db"),
-        lmdb::open::Flags::empty(),
-        0o600)?;
-    }
-
-    let inverted_list = load_db_instance::<InvertedList>(&env, "inverted_list")?;
-    let codebook = load_db_instance::<Codebook>(&env, "codebook")?;
-
-    Ok(Context {
-        env,
-        inverted_list,
-        codebook,
-        loaded_clusters: vec![None; codebook.get_size()],
-        distance_function: match df {
-            DistanceFunctionSelection::Cosine => CosineDistFn,
-            _ => DefaultDistFn
-        }
-    })
-}
-

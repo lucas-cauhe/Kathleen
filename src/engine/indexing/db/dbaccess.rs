@@ -7,20 +7,9 @@
 
 
 use std::{rc::Rc, collections::HashMap};
-
-
-use rdb::ColumnFamilyDescriptor;
-use rdb::DB;
-use rdb::DBCommon;
 use rdb::Error;
-use rdb::ColumnFamily;
-use rdb::Options;
-use serde::de::DeserializeOwned;
-
 use crate::engine::indexing::ivf_controller::ResponseResult;
-use crate::engine::utils::get_serialized;
 use crate::engine::utils::types::ClusterId;
-use crate::engine::utils::types::DBInstance;
 use crate::{tokenizer::tokenize::Embedding, engine::utils::types::{VecId, SegmentId}};
 use super::DBConfig;
 use super::ctx::ActionType;
@@ -93,9 +82,23 @@ impl EmbeddingHolder {
         todo!()
     }
 
-    pub fn get_cached_embeddings(&self) -> Option<Vec<EmbeddingContainer>> {
-        self.embeddings
+    // only returns true if all embeddings are cached
+    pub fn are_cached(&self, embeddings: &[usize], cluster: &ClusterId) -> bool {
+        embeddings.iter()
+            .filter(|embedding_id| self.embeddings.contains_key(*embedding_id))
+            .count()
+        == embeddings.len()
     }
+
+    // if it is very expensive, RocksDB handles duplicates by itself
+    // so if action is dump add it to the queue always (tradeoff searching now vs dumping late)
+    // rocksdb shines at inserting, not querying though
+    /* pub fn are_duplicates(&self, embeddings: &[usize], cluster: &ClusterId) -> bool {
+        if !self.are_cached(embeddings, cluster) {
+            // search in the db for those embeddings
+        }
+        true
+    } */
 
 }
 
@@ -252,8 +255,21 @@ impl DbAccess {
     // if all segments requested to load are cached already
     // return them, otherwise return None
     // ALL segments must be cached if any is missing then it must return None
-    pub fn get_cached(act_type: ActionType) -> Option<ResponseResult> {
-        todo!()
+    pub fn get_cached(&self, act_type: &ActionType) -> Option<ResponseResult> {
+        match act_type {
+            ActionType::Load { embeddings, cluster } => {
+                if self.embedding_holder.are_cached(embeddings, cluster) {
+                    Some(self.embedding_holder.update_references_to(embeddings, cluster))
+                }
+                None
+            },
+            ActionType::Dump { embeddings, cluster } => {
+                /* if self.embedding_holder.are_duplicates(embeddings, cluster) {
+                    Some(ResponseResult::Dump())
+                } */
+                None
+            }
+        }
     }
 
 }

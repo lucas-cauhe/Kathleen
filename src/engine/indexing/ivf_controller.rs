@@ -1,16 +1,16 @@
-use std::{cell::RefCell, sync::{Arc, Mutex}, future::Future};
+use std::{cell::RefCell, sync::{Arc, Mutex}, future::Future, task::Waker};
 
 use rdb::Error;
-use futures::{executor::block_on, FutureExt};
+use futures::{executor::block_on};
 
 
 use crate::engine::utils::types::{ClusterId, VecId};
 
-use super::db::{ctx::{Context, ActionType}, dbaccess::EmbeddingHolder, self};
+use super::db::{ctx::{Context, ActionType}, dbaccess::EmbeddingHolder};
 
 
 pub struct IVFController {
-    ctx: Arc<Mutex<Context>>
+    ctx: Arc<Context>
 }
 
 pub enum ResponseResult {
@@ -18,20 +18,32 @@ pub enum ResponseResult {
     Dump()
 }
 
+#[derive(Clone)]
+pub struct ActionWaker {
+    pub action: ActionType,
+    pub waker: Option<Waker>,
+    pub response: Option<ResponseResult>
+}
+
+impl ActionWaker {
+    pub fn new(act: ActionType, resp: Option<ResponseResult>) -> Self {
+        ActionWaker { 
+            action: act,
+            waker: None,
+            response: resp
+        }
+    }
+}
+
 pub struct ActionFuture {
-    cb: dyn Fn(&mut std::task::Context) -> Option<ResponseResult>
+    shared_state: Arc<Mutex<ActionWaker>>
 }
 
 impl ActionFuture {
-    pub fn new() -> Self {
-        ActionFuture { cb: () }
-    }
-
-    pub fn set_cb<F>(&self, f: F) -> () 
-    where
-        F: Fn(&mut std::task::Context) -> Option<ResponseResult>
-    {
-        self.cb = f;
+    pub fn new(act_waker: Arc<Mutex<ActionWaker>>) -> Self {
+        ActionFuture { 
+            shared_state: act_waker,
+        }
     }
 }
 
@@ -39,10 +51,11 @@ impl Future for ActionFuture {
     type Output = Result<ResponseResult, Error>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-        if let Some(res) = self.cb(cx) {
-            std::task::Poll::Ready(Ok(res))
+        let mut shared_state = self.shared_state.lock().unwrap();
+        if let Some(cached) = shared_state.response {
+            std::task::Poll::Ready(Ok(cached))
         } else {
-            // the wake method has been passed to the cb
+            shared_state.waker = Some(cx.waker().clone());
             std::task::Poll::Pending
         }
     }
@@ -50,7 +63,7 @@ impl Future for ActionFuture {
 
 trait InternalAction
 {
-    fn add_action(&self, ctx: Arc<Mutex<Context>>, act_type: &ActionType) -> Result<ResponseResult, Error>{
+    fn wait_for_action(&self, ctx: &Arc<Context>, act_type: &ActionType) -> Result<ResponseResult, Error>{
         
         // if there are any chances a thread could panic while having the lock
         // when taking it you must ensure it is not poisoned
@@ -58,15 +71,16 @@ trait InternalAction
         // queue_action cannot be a blocking function since it has the mutex
         // if it were to be awaitable then every other thread waiting for the mutex
         // wouldn't take it until the db opt was done. What would break the whole system designed
-        let complete: ActionFuture =
-        {
-            let local_ctx = ctx.lock().unwrap();
-            // action.add(*local_ctx.queue_action(act_type)?);
-            *local_ctx.get_ready(act_type)
-        };
-        block_on(complete) // will call poll defined in the custom impl
+        let complete: ActionFuture = ctx.dispatch_future(act_type);
+        let result = block_on(complete); // will call poll defined in the custom impl
+
+        // IMPORTANT
+        // CHECK THE SHARED STATE IS DROPPED BY THIS TIME
+        // IF NOT DROP IT EXPLICITLY NOW
+        // drop(complete);
+
+        result
     }
-    //fn response(&self, token: (usize, usize)) -> Result<ResponseResult, Error>;
 }
 
 pub struct Load {}
@@ -76,8 +90,8 @@ impl InternalAction for Load {}
 impl InternalAction for Dump {}
 
 impl Load {
-    pub fn load(&self, ctx: Arc<RefCell<Context>>, embeddings: &[VecId], cluster: &ClusterId) -> Result<Arc<EmbeddingHolder>, Error> {
-        let response = self.add_action(ctx, &ActionType::Load { embeddings, cluster });
+    pub fn load(&self, ctx: &Arc<RefCell<Context>>, embeddings: &[VecId], cluster: &ClusterId) -> Result<Arc<EmbeddingHolder>, Error> {
+        let response = self.wait_for_action(ctx, &ActionType::Load { embeddings, cluster });
         match response {
             Ok(res) => {
                 match res {
@@ -92,7 +106,7 @@ impl Load {
 
 impl Dump {
     pub fn dump(&self, ctx: Arc<RefCell<Context>>, embeddings: &[VecId], cluster: &ClusterId) -> Result<(), Error> {
-        let response = self.add_action(ctx, &ActionType::Dump { embeddings, cluster });
+        let response = self.wait_for_action(ctx, &ActionType::Dump { embeddings, cluster });
         match response {
             Ok(res) => {
                 match res {
