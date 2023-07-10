@@ -1,7 +1,9 @@
 use serde::Deserialize;
 use avl::map::AvlTreeMap;
 use std::{ops::Deref, slice::Iter, vec};
-
+use derivative::{self, Derivative};
+use ordered_float::NotNan;
+use super::maxheap_wrapper::{BinaryHeapWrapper, HeapNode, RETRIEVE_KNN, self};
 
 pub const N: usize = 1;
 pub const K: usize = 1;
@@ -16,6 +18,7 @@ pub const SEGMENT_DIM: usize = EMBEDDING_DIM / EMBEDDING_M_SEGMENTS;
 pub const CENTROIDS_PER_SUBSPACE_CLUSTER: usize = 8;
 pub const K_MAX_CENTROIDS: usize = EMBEDDING_M_SEGMENTS * CENTROIDS_PER_SUBSPACE_CLUSTER;
 
+
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct Segment([f64; N]);
 
@@ -29,7 +32,7 @@ impl Embedding {
 }
 
 
-type PqCode = [u32; CODE_SIZE];
+pub(super) type PqCode = [u32; CODE_SIZE];
 // Inverted Index crate
 
 impl<> Into<Embedding> for PqCode {
@@ -76,9 +79,14 @@ impl<T: > AvlWrapper<T> {
         // perform CENTROIDS_PER_SUBSPACE_CLUSTER iterations in-order through self 
         self.0.iter().take(CENTROIDS_PER_SUBSPACE_CLUSTER).map(|(key, dtype)| dtype.into_centroid()).collect::<Centroid<'a>>()
     }
+
+    // get all the elements in-order
+    pub fn get_all<'a>(&'a self) -> Iter<'a, Box<T>> {
+        unimplemented!()
+    }
 }
 
-pub struct InvertedIndex<T>([AvlWrapper<T>; K]);
+pub struct InvertedIndex<T>([AvlWrapper<T>; CENTROIDS_PER_SUBSPACE_CLUSTER]);
 
 impl<T> InvertedIndex<T> {
     pub fn empty() -> Self {
@@ -108,7 +116,7 @@ impl<T> InvertedIndex<T> {
     /// Table containing distance to each list entry segment for every centroid in Codebook from every query vector segment
     /// K x N table
     /// take from distance that is the lowest the formed codes what will give
-    pub fn compute_distance_table(&self, query_vector: &Embedding, nearest_centroid: Clusters) -> Vec<DistanceTable> {
+    pub fn compute_distance_table(&self, query_vector: &Embedding, nearest_centroid: Clusters) -> DistanceTable {
         // get embeddings from rdb for nearest_centroid enty
         let embs: &AvlWrapper<IVListEntry> = self.load_cluster(nearest_centroid, db).expect("Error loading embeddings in cluster");
         // compute distances
@@ -127,9 +135,7 @@ impl<T> InvertedIndex<T> {
 
             distance_table.push(distances);
         }
-            
         distance_table
-
     }
 
     /// retrieves the nearest neighbor for the requested query vector
@@ -171,6 +177,12 @@ impl<T> Deref for InvertedIndex<T> {
 // let D = 12, m = 4, k = 32 -> pq_codes: [uint; 3] where the uint will be in range 0..32
 // where uint 10 is the centroid number 1 in subspace 1, 23 is the centroid number 23%8 in subspace 23/8 (starting from 0)
 
+// the concatenation of the centroids from each subquantizer with same index, yields the codebook
+
+// so the distance table holds the distance to every centroid for every segment
+// next you go over all the pq_codes in the coarse quantizer's cluster to which the query vector associated centoid is closest
+// there you can get the distance to every encoded vector and perform KNN
+
 /// holds tuple (cluster_no, embedding)
 pub struct Centroid<'a> ((Clusters, &'a Embedding));
 
@@ -180,7 +192,7 @@ pub fn k_means(ividx: &mut InvertedIndex<IVListEntry>, embs: &[Embedding]) {
 } 
 
 
-pub fn search(ividx: InvertedIndex<IVListEntry>, query_vectors: &[Embedding] ) -> (Vec<PqCode>, InvertedIndex<IVListEntry>) {
+pub fn search(ividx: InvertedIndex<IVListEntry>, query_vectors: &[Embedding] ) -> Result<(Vec<Vec<HeapNode>>, InvertedIndex<IVListEntry>), String> {
     
     // this are centroids from the original coarse quantizer trained with raw vectors
     // this is used just to know which cluster does each query_vector belongs to
@@ -196,15 +208,27 @@ pub fn search(ividx: InvertedIndex<IVListEntry>, query_vectors: &[Embedding] ) -
         .map(|(cent, qv)| ividx.compute_residual(cent.0.1, qv))
         .collect::<Vec<Embedding>>();
 
-    let distance_tables = Vec::with_capacity(K);
-    for (ind, _centroid) in residuals.iter().enumerate() {
-        let dt = ividx.compute_distance_table(&query_vectors[ind], cq_nearest_centroids[ind].0.0);
-        // add it all up
-
-        // find minimum
-        // push it to dts
+    let distance_results = Vec::new();
+    for (ind, resid) in residuals.iter().enumerate() {
+        let dt = ividx.compute_distance_table(resid, cq_nearest_centroids[ind].0.0);
+        let max_heap = BinaryHeapWrapper::new();
+        let emb = ividx.load_cluster(cq_nearest_centroids[ind].0.0, db).expect("Error loading cluster");
+        emb.get_all()
+            .for_each(|entry| {
+                let emb_dist = entry.pq_code.iter()
+                    .enumerate()
+                    .map(|(subq, code)| dt[subq][*code as usize] )
+                    .sum::<f32>();
+                if let Ok(distance) = NotNan::new(emb_dist) {
+                    max_heap.push(HeapNode {
+                        distance,
+                        code: &entry.pq_code
+                    }).expect("Error while pushing distance to maxheap");
+                }
+            });
+        distance_results.push(max_heap.sorted());
     }
-    (distance_tables, ividx)
+    Ok((distance_results, ividx))
 }
 
 

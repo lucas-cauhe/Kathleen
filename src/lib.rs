@@ -8,6 +8,8 @@ mod tests {
 
     #[test]
     fn it_searches() {
+
+        
         // get raw embeddings
 
         // perform k_means
