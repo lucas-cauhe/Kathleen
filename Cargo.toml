@@ -13,3 +13,4 @@ heapless = "0.7.16"
 ordered-float = "3.7.0"
 rocksdb = "0.21.0"
 serde = { version = "1.0.166", features=["derive"] }
+serde_cbor = "0.11.2"

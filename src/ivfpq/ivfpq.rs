@@ -1,11 +1,14 @@
 
 use avl::map::AvlTreeMap;
-use std::{ops::Deref, slice::Iter, vec};
+use serde::{Serialize, Deserialize};
+use std::{ops::Deref, slice::Iter, vec, path::Path, marker::PhantomData};
 use ordered_float::NotNan;
 use super::{
     maxheap_wrapper::{BinaryHeapWrapper, HeapNode},
-    primitive_types::{Embedding, Clusters, IVListEntry, DBResult, DistanceTable}
+    primitive_types::{Embedding, Clusters, IVListEntry, DBResult, DistanceTable, Codebook}
 };
+use rocksdb::{DB, Options};
+use serde_cbor;
 
 // k's between subspaces k-means and coarse quantizer may differ, take it into account
 
@@ -36,6 +39,7 @@ pub trait IntoCentroid {
     fn into_centroid<'a>(&'a self) -> Centroid<'a>;
 }
 
+#[derive(Debug)]
 pub struct AvlWrapper<T>(AvlTreeMap<u32, Box<T>>);
 
 impl<T: > AvlWrapper<T> {
@@ -55,31 +59,21 @@ impl<T: > AvlWrapper<T> {
     }
 }
 
-pub struct InvertedIndex<T>([AvlWrapper<T>; CENTROIDS_PER_SUBSPACE_CLUSTER]);
+impl Serialize for AvlWrapper<T: Serialize> {
+
+}
+
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct InvertedIndex<T>(Vec<AvlWrapper<T>>);
 
 impl<T> InvertedIndex<T> {
     pub fn empty() -> Self {
-        Self([AvlWrapper::new(); CQ_K_CENTROIDS])
+        Self(Vec::with_capacity(CQ_K_CENTROIDS))
     }
-
-    /// loads cluster <clust_no> into self and returns a reference to it
-    pub fn load_cluster(&mut self, clust_no: Clusters, db: &DatabaseWrapper) -> DBResult<&AvlWrapper<T>> {
-        // load cluster <clust_no>
-        // start iterator over vectors in cluster <clust_no> (filter those that contain <clust_no> in cluster field)
-        let loaded_ds: [u8] = db.get_cf_bla_bla();
-        self.0[clust_no as usize] = loaded_ds.deserialize_from_bytes();
-    }
-
-    /// pushes <entry> to cluster <clust_no>, eventually it pushes it to the db
-    pub fn push_to_cluster(&mut self, clust_no: Clusters, db: &DatabaseWrapper, entry: IVListEntry) -> DBResult<()> {
-        unimplemented!()
-    }
-
-    /// reloads itself to apply latest changes in the coarse quantizer
-    /// such as cluster redistribution or embeddings switching clusters
-    /// all data InMemory must be flushed and reorganized before calling this function
-    pub fn reload() -> Result<(), String> {
-        unimplemented!()
+    
+    pub fn get_cluster(&self, clust_no: Clusters) -> &AvlWrapper<T> {
+        &self.0[clust_no as usize]
     }
 
     /// Table containing distance to each list entry segment for every centroid in Codebook from every query vector segment
@@ -87,7 +81,7 @@ impl<T> InvertedIndex<T> {
     /// take from distance that is the lowest the formed codes what will give
     pub fn compute_distance_table(&self, query_vector: &Embedding, nearest_centroid: Clusters) -> DistanceTable {
         // get embeddings from rdb for nearest_centroid enty
-        let embs: &AvlWrapper<IVListEntry> = self.load_cluster(nearest_centroid, db).expect("Error loading embeddings in cluster");
+        let embs= self.get_cluster(nearest_centroid);
         // compute distances
         let distance_table = vec![];
         let centroids = embs.get_centroids();
@@ -175,7 +169,7 @@ pub fn search(ividx: InvertedIndex<IVListEntry>, query_vectors: &[Embedding] ) -
     for (ind, resid) in residuals.iter().enumerate() {
         let dt = ividx.compute_distance_table(resid, cq_nearest_centroids[ind].0.0);
         let max_heap: BinaryHeapWrapper<HeapNode<'_>, {RETRIEVE_KNN}> = BinaryHeapWrapper::new();
-        let embs = ividx.load_cluster(cq_nearest_centroids[ind].0.0, db).expect("Error loading cluster");
+        let embs = ividx.get_cluster(cq_nearest_centroids[ind].0.0).expect("Error loading cluster");
         embs.get_all()
             .for_each(|entry| {
                 let emb_dist = entry.get_code().iter()
@@ -197,13 +191,120 @@ pub fn search(ividx: InvertedIndex<IVListEntry>, query_vectors: &[Embedding] ) -
 
 
 // DATABASE
+// will store: Inverted Index File with all its entries
+//             Codebook as for subquantizers which will build up to the CQ Codebook
+//             CQ and each subquantizers' states somehow??
+
+// the ivf will be working in-memory, although it will get eventually flushed to disk
+
+struct Closed {}
+struct Open {}
 
 // represent database wrapper to make common calls (put, write...)
-pub struct DatabaseWrapper{}
+pub struct DatabaseWrapper<T>{
+    database: DB,
+    _open: PhantomData<T>
+}
 
-impl DatabaseWrapper {
-    pub fn add(embs: &[IVListEntry]) -> DBResult<()> {
-        // add embs to the database
-        unimplemented!()
+fn db_options() -> Options {
+    Options::default()
+}
+
+impl<> DatabaseWrapper<Closed> {
+
+    pub fn open(path: &Path) -> DBResult<DatabaseWrapper<Open>> {
+        let db = DB::open(&db_options(), path)?;
+        Ok(DatabaseWrapper::<Open> {
+            database: db,
+            _open: PhantomData
+        })
     }
+}
+
+impl <> DatabaseWrapper<Open> {
+
+    pub fn persist_codebook(&self, codeb: Codebook ) -> DBResult<()> {
+        // add embs to the database
+        // serialize them into byte arrays
+        // search how to udpate or set some values in rdb
+        let key = b"codebook";
+        match self.database.get(key)? {
+            Some(codebook) /* Deserialize codebook & add embedding */ => {
+                // deserialize
+                let deserialized_cb: Codebook = serde_cbor::from_slice(&codebook).expect("Deserialization failed: ");
+
+                // add embedding if changed
+                if codeb != deserialized_cb {
+                    // remove current codebook
+                    self.database.delete(key)?;
+                    // serialize codebook
+                    let serialized_cb = serde_cbor::to_vec(&codeb).expect("Serialization failed");
+                    self.database.put(key, serialized_cb)?;
+                } 
+            },
+            None /* Create Codebook (OnDisk, create it without looking for changes) */ => {
+                self.database.put(key, serde_cbor::to_vec(&codeb).expect("Serialization failed"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// this function will be called when first loading the codebook
+    pub fn load_codebook(&self) -> DBResult<Codebook> {
+        let key = b"codebook";
+        match self.database.get(key)? {
+            Some(codebook) /* Deserialize Codebook */ => {
+                Ok(serde_cbor::from_slice(&codebook))
+            },
+            None /* Create Codebook (InMemory) */ => {
+                Ok([Default::default(); CQ_K_CENTROIDS])
+            }
+        }
+        
+    }
+
+    pub fn persist_ivf(&self, ivf: InvertedIndex<IVListEntry>) -> DBResult<()> {
+        // same as persist_codebook
+        let key = b"ivf";
+        match self.database.get(key)? {
+            Some(db_ivf) /* Deserialize IVF & add embedding */ => {
+                // deserialize
+                let deserialized_ivf: InvertedIndex<IVListEntry> = serde_cbor::from_slice(&db_ivf).expect("Deserialization failed: ");
+
+                // add entry if changed
+                if ivf != deserialized_ivf {
+                    // remove current ivf
+                    self.database.delete(key)?;
+                    // serialize ivf
+                    let serialized_cb = serde_cbor::to_vec(&ivf).expect("Serialization failed");
+                    self.database.put(key, serialized_cb)?;
+                } 
+            },
+            None /* Create IVF (OnDisk, create it without looking for changes) */ => {
+                self.database.put(key, serde_cbor::to_vec(&ivf).expect("Serialization failed"))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn load_ivf(&self) -> DBResult<InvertedIndex<IVListEntry>> {
+        // same as load_codebook
+        let key = b"ivf";
+        match self.database.get(key)? {
+            Some(ivf) /* Deserialize IVF */ => {
+                Ok(serde_cbor::from_slice(&ivf)?)
+            },
+            None /* Create IVF (InMemory) */ => {
+                Ok(InvertedIndex::empty())
+            }
+        }
+    }
+
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
 }

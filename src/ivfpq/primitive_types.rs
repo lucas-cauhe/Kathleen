@@ -1,12 +1,12 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use core::slice::Iter;
 
 use super::ivfpq::{SEGMENT_DIM, EMBEDDING_M_SEGMENTS, CODE_SIZE, CQ_K_CENTROIDS, CENTROIDS_PER_SUBSPACE_CLUSTER};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub(crate) struct Segment([f64; SEGMENT_DIM]);
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub(crate) struct Embedding([Segment; EMBEDDING_M_SEGMENTS]);
 
 impl Embedding {
@@ -15,10 +15,9 @@ impl Embedding {
     }
 }
 
-
 pub(super) type PqCode = [u32; CODE_SIZE];
 pub(super) type Clusters = u8;
-pub(super) type DBResult<T> = Result<T, String>; // may change this error type
+pub(super) type DBResult<T> = Result<T, rocksdb::Error>; // may change this error type
 pub(super) type DistanceTable = [[f32; EMBEDDING_M_SEGMENTS]; CENTROIDS_PER_SUBSPACE_CLUSTER];
 pub(super) type Codebook = [Embedding; CQ_K_CENTROIDS];
 
