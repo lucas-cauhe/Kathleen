@@ -1,17 +1,12 @@
 [package]
-name = "kathleen-back"
+name = "kathleen"
+>>>>>>> a931d40 (brick2brick)
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dotenv = "0.15.0"
-reductive = "0.9"
-ndarray = "0.15"
-rocksdb = "0.19.0"
-serde = {version="1.0.152", features=["derive"]}
-serde_json = "1.0.91"
-queues = "1.1.0"
-futures = "0.3.26"
-std-semaphore = "0.1.0"
+avl = "0.7.1"
+rocksdb = "0.21.0"
+serde = { version = "1.0.166", features=["derive"] }
