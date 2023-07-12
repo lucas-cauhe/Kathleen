@@ -13,6 +13,11 @@ pub struct HeapNode<'a> {
     code: &'a PqCode
 }
 
+impl<'a> HeapNode<'a> {
+    pub fn new(d: NotNan<f32>, c: &'a PqCode) -> Self {
+        Self { distance: d, code: c }
+    }
+}
 
 
 pub(crate) struct BinaryHeapWrapper<T, const N:usize>(BinaryHeap<T, Max, N>);

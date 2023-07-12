@@ -1,7 +1,7 @@
 
 use avl::map::AvlTreeMap;
-use serde::{Serialize, Deserialize};
-use std::{ops::Deref, slice::Iter, vec, path::Path, marker::PhantomData};
+use serde::{Serialize, Deserialize, de::Visitor};
+use std::{ops::{Deref, DerefMut}, slice::Iter, path::Path, marker::PhantomData};
 use ordered_float::NotNan;
 use super::{
     maxheap_wrapper::{BinaryHeapWrapper, HeapNode},
@@ -39,40 +39,54 @@ pub trait IntoCentroid {
     fn into_centroid<'a>(&'a self) -> Centroid<'a>;
 }
 
-#[derive(Debug)]
-pub struct AvlWrapper<T>(AvlTreeMap<u32, Box<T>>);
+#[derive(Debug, PartialEq, Eq)]
+pub struct AvlWrapper(AvlTreeMap<u32, Box<IVListEntry>>);
 
-impl<T: > AvlWrapper<T> {
+impl AvlWrapper {
     pub fn new() -> Self {
         Self(AvlTreeMap::new())
+    }
+
+    pub fn from(src: AvlTreeMap<u32, Box<IVListEntry>>) -> Self {
+        Self(src)
     }
 
     /// centroids should have the lowest ids in the tree
     pub fn get_centroids<'a>(&'a self) -> Vec<Centroid<'a>> {
         // perform CENTROIDS_PER_SUBSPACE_CLUSTER iterations in-order through self 
-        self.0.iter().take(CENTROIDS_PER_SUBSPACE_CLUSTER).map(|(key, dtype)| dtype.into_centroid()).collect::<Centroid<'a>>()
+        //self.0.iter().take(CENTROIDS_PER_SUBSPACE_CLUSTER).map(|(key, dtype)| dtype.into_centroid()).collect::<Centroid<'a>>()
+        unimplemented!()
     }
 
     // get all the elements in-order
-    pub fn get_all<'a>(&'a self) -> Iter<'a, Box<T>> {
+    pub fn get_all<'a>(&'a self) -> Iter<'a, Box<IVListEntry>> {
         unimplemented!()
     }
 }
 
-impl Serialize for AvlWrapper<T: Serialize> {
+impl Deref for AvlWrapper {
+    type Target = AvlTreeMap<u32, Box<IVListEntry>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
+impl DerefMut for AvlWrapper {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct InvertedIndex<T>(Vec<AvlWrapper<T>>);
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct InvertedIndex(Vec<AvlWrapper>);
 
-impl<T> InvertedIndex<T> {
+impl InvertedIndex {
     pub fn empty() -> Self {
         Self(Vec::with_capacity(CQ_K_CENTROIDS))
     }
     
-    pub fn get_cluster(&self, clust_no: Clusters) -> &AvlWrapper<T> {
+    pub fn get_cluster(&self, clust_no: Clusters) -> &AvlWrapper {
         &self.0[clust_no as usize]
     }
 
@@ -81,7 +95,7 @@ impl<T> InvertedIndex<T> {
     /// take from distance that is the lowest the formed codes what will give
     pub fn compute_distance_table(&self, query_vector: &Embedding, nearest_centroid: Clusters) -> DistanceTable {
         // get embeddings from rdb for nearest_centroid enty
-        let embs= self.get_cluster(nearest_centroid);
+        /* let embs= self.get_cluster(nearest_centroid);
         // compute distances
         let distance_table = vec![];
         let centroids = embs.get_centroids();
@@ -98,7 +112,8 @@ impl<T> InvertedIndex<T> {
 
             distance_table.push(distances);
         }
-        distance_table
+        distance_table */
+        unimplemented!()
     }
 
     /// retrieves the nearest neighbor for the requested query vector
@@ -112,8 +127,8 @@ impl<T> InvertedIndex<T> {
 
 }
 
-impl<T> Deref for InvertedIndex<T> {
-    type Target = [AvlWrapper<T>; CENTROIDS_PER_SUBSPACE_CLUSTER];
+impl Deref for InvertedIndex {
+    type Target = Vec<AvlWrapper>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -144,12 +159,12 @@ impl<T> Deref for InvertedIndex<T> {
 
 
 
-pub fn k_means(ividx: &mut InvertedIndex<IVListEntry>, embs: &[Embedding]) {
+pub fn k_means(ividx: &mut InvertedIndex, embs: &[Embedding]) {
     // search for a built k_means
 } 
 
 
-pub fn search(ividx: InvertedIndex<IVListEntry>, query_vectors: &[Embedding] ) -> Result<(Vec<Vec<HeapNode>>, InvertedIndex<IVListEntry>), String> {
+pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding] ) -> Result<Vec<Vec<HeapNode<'a>>>, String> {
     
     // this are centroids from the original coarse quantizer trained with raw vectors
     // this is used just to know which cluster does each query_vector belongs to
@@ -165,11 +180,11 @@ pub fn search(ividx: InvertedIndex<IVListEntry>, query_vectors: &[Embedding] ) -
         .map(|(cent, qv)| ividx.compute_residual(cent.0.1, qv))
         .collect::<Vec<Embedding>>();
 
-    let distance_results = Vec::new();
+    let mut distance_results = Vec::new();
     for (ind, resid) in residuals.iter().enumerate() {
         let dt = ividx.compute_distance_table(resid, cq_nearest_centroids[ind].0.0);
-        let max_heap: BinaryHeapWrapper<HeapNode<'_>, {RETRIEVE_KNN}> = BinaryHeapWrapper::new();
-        let embs = ividx.get_cluster(cq_nearest_centroids[ind].0.0).expect("Error loading cluster");
+        let mut max_heap: BinaryHeapWrapper<HeapNode<'_>, {RETRIEVE_KNN}> = BinaryHeapWrapper::new();
+        let embs = ividx.get_cluster(cq_nearest_centroids[ind].0.0);
         embs.get_all()
             .for_each(|entry| {
                 let emb_dist = entry.get_code().iter()
@@ -177,15 +192,14 @@ pub fn search(ividx: InvertedIndex<IVListEntry>, query_vectors: &[Embedding] ) -
                     .map(|(subq, code)| dt[subq][*code as usize] )
                     .sum::<f32>();
                 if let Ok(distance) = NotNan::new(emb_dist) {
-                    max_heap.push(HeapNode {
-                        distance,
-                        code: entry.get_code()
-                    }).expect("Error while pushing distance to maxheap");
+                    max_heap
+                        .push(HeapNode::new(distance, entry.get_code()))
+                        .expect("Error while pushing distance to maxheap");
                 }
             });
         distance_results.push(max_heap.sorted());
     }
-    Ok((distance_results, ividx))
+    Ok(distance_results)
 }
 
 
@@ -254,7 +268,7 @@ impl <> DatabaseWrapper<Open> {
         let key = b"codebook";
         match self.database.get(key)? {
             Some(codebook) /* Deserialize Codebook */ => {
-                Ok(serde_cbor::from_slice(&codebook))
+                Ok(serde_cbor::from_slice(&codebook).expect("Failed Deserializing:"))
             },
             None /* Create Codebook (InMemory) */ => {
                 Ok([Default::default(); CQ_K_CENTROIDS])
@@ -263,13 +277,13 @@ impl <> DatabaseWrapper<Open> {
         
     }
 
-    pub fn persist_ivf(&self, ivf: InvertedIndex<IVListEntry>) -> DBResult<()> {
+    pub fn persist_ivf(&self, ivf: InvertedIndex) -> DBResult<()> {
         // same as persist_codebook
         let key = b"ivf";
         match self.database.get(key)? {
             Some(db_ivf) /* Deserialize IVF & add embedding */ => {
                 // deserialize
-                let deserialized_ivf: InvertedIndex<IVListEntry> = serde_cbor::from_slice(&db_ivf).expect("Deserialization failed: ");
+                let deserialized_ivf: InvertedIndex = serde_cbor::from_slice(&db_ivf).expect("Deserialization failed: ");
 
                 // add entry if changed
                 if ivf != deserialized_ivf {
@@ -287,12 +301,12 @@ impl <> DatabaseWrapper<Open> {
         Ok(())
     }
 
-    pub fn load_ivf(&self) -> DBResult<InvertedIndex<IVListEntry>> {
+    pub fn load_ivf(&self) -> DBResult<InvertedIndex> {
         // same as load_codebook
         let key = b"ivf";
         match self.database.get(key)? {
             Some(ivf) /* Deserialize IVF */ => {
-                Ok(serde_cbor::from_slice(&ivf)?)
+                Ok(serde_cbor::from_slice(&ivf).expect("Error Deserializing: "))
             },
             None /* Create IVF (InMemory) */ => {
                 Ok(InvertedIndex::empty())
@@ -303,8 +317,3 @@ impl <> DatabaseWrapper<Open> {
 
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-}
