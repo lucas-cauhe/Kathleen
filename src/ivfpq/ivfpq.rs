@@ -85,6 +85,10 @@ impl InvertedIndex {
     pub fn empty() -> Self {
         Self(Vec::with_capacity(CQ_K_CENTROIDS))
     }
+
+    pub fn push(&mut self, value: AvlWrapper) {
+        self.0.push(value)
+    }
     
     pub fn get_cluster(&self, clust_no: Clusters) -> &AvlWrapper {
         &self.0[clust_no as usize]

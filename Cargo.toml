@@ -1,6 +1,5 @@
 [package]
 name = "kathleen"
->>>>>>> a931d40 (brick2brick)
 version = "0.1.0"
 edition = "2021"
 

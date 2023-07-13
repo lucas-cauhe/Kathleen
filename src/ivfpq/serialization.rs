@@ -8,7 +8,7 @@ impl Serialize for AvlWrapper {
         where
             S: serde::Serializer {
         
-        serializer.serialize_newtype_struct("AvlWrapper", &to_json(&self))
+        serializer.serialize_str(&to_json(&self))
     }
 }
 
@@ -24,20 +24,26 @@ impl<'de> Deserialize<'de> for AvlWrapper {
                         formatter.write_str("struct AvlWrapper")
                     }
 
-                    /* fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+                    fn visit_string<E>(self, v: String) -> Result<AvlWrapper, E>
                         where
                             E: serde::de::Error, {
-                        
-                    } */
+                        Ok(AvlWrapper::from(from_json(v)))
+                    }
 
-                    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+                    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+                        where
+                            E: serde::de::Error, {
+                                Ok(AvlWrapper::from(from_json(v.to_string())))
+                    }
+
+                    fn visit_bytes<E>(self, v: &[u8]) -> Result<AvlWrapper, E>
                         where
                             E: serde::de::Error, {
                         let json_avl_wrapper: String = serde_cbor::from_slice(v).expect("Error deserializing in visitor");
                         Ok(AvlWrapper::from(from_json(json_avl_wrapper)))
                     }
                 }
-                deserializer.deserialize_tuple_struct("AvlWrapper", 1, AvlVisitor)
+                deserializer.deserialize_str(AvlVisitor)
     }
 }
 
@@ -68,13 +74,20 @@ fn from_json(mut source: String) -> AvlTreeMap<u32, Box<IVListEntry>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ivfpq::ivfpq::CODE_SIZE;
+    use crate::ivfpq::ivfpq::{CODE_SIZE, InvertedIndex, AvlWrapper};
 
     use super::*;
 
     #[test]
     fn serialization_works() {
-        
+        let mut avl = AvlWrapper::new();
+        avl.insert(123, Box::new(IVListEntry::new([1], 0)));
+        avl.insert(124, Box::new(IVListEntry::new([1], 1)));
+        let mut ivf = InvertedIndex::empty();
+        ivf.push(avl);
+        let bytes = serde_cbor::to_vec(&ivf).unwrap();
+        let des_ivf: InvertedIndex = serde_cbor::from_slice(&bytes).unwrap();
+        assert_eq!(ivf, des_ivf);
     }
 
     #[test]
