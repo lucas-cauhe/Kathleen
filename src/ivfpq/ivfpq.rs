@@ -1,14 +1,12 @@
 
 use avl::map::AvlTreeMap;
-use serde::{Serialize, Deserialize, de::Visitor};
-use std::{ops::{Deref, DerefMut}, slice::Iter, path::Path, marker::PhantomData};
+use serde::{Serialize, Deserialize};
+use std::{ops::{Deref, DerefMut}, slice::Iter};
 use ordered_float::NotNan;
 use super::{
     maxheap_wrapper::{BinaryHeapWrapper, HeapNode},
-    primitive_types::{Embedding, Clusters, IVListEntry, DBResult, DistanceTable, Codebook}
+    primitive_types::{Embedding, Clusters, IVListEntry, DistanceTable}
 };
-use rocksdb::{DB, Options};
-use serde_cbor;
 
 // k's between subspaces k-means and coarse quantizer may differ, take it into account
 
@@ -39,7 +37,7 @@ pub trait IntoCentroid {
     fn into_centroid<'a>(&'a self) -> Centroid<'a>;
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AvlWrapper(AvlTreeMap<u32, Box<IVListEntry>>);
 
 impl AvlWrapper {
@@ -78,7 +76,7 @@ impl DerefMut for AvlWrapper {
 }
 
 
-#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct InvertedIndex(Vec<AvlWrapper>);
 
 impl InvertedIndex {
@@ -205,119 +203,3 @@ pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding] ) -> Res
     }
     Ok(distance_results)
 }
-
-
-
-// DATABASE
-// will store: Inverted Index File with all its entries
-//             Codebook as for subquantizers which will build up to the CQ Codebook
-//             CQ and each subquantizers' states somehow??
-
-// the ivf will be working in-memory, although it will get eventually flushed to disk
-
-struct Closed {}
-struct Open {}
-
-// represent database wrapper to make common calls (put, write...)
-pub struct DatabaseWrapper<T>{
-    database: DB,
-    _open: PhantomData<T>
-}
-
-fn db_options() -> Options {
-    Options::default()
-}
-
-impl<> DatabaseWrapper<Closed> {
-
-    pub fn open(path: &Path) -> DBResult<DatabaseWrapper<Open>> {
-        let db = DB::open(&db_options(), path)?;
-        Ok(DatabaseWrapper::<Open> {
-            database: db,
-            _open: PhantomData
-        })
-    }
-}
-
-impl <> DatabaseWrapper<Open> {
-
-    pub fn persist_codebook(&self, codeb: Codebook ) -> DBResult<()> {
-        // add embs to the database
-        // serialize them into byte arrays
-        // search how to udpate or set some values in rdb
-        let key = b"codebook";
-        match self.database.get(key)? {
-            Some(codebook) /* Deserialize codebook & add embedding */ => {
-                // deserialize
-                let deserialized_cb: Codebook = serde_cbor::from_slice(&codebook).expect("Deserialization failed: ");
-
-                // add embedding if changed
-                if codeb != deserialized_cb {
-                    // remove current codebook
-                    self.database.delete(key)?;
-                    // serialize codebook
-                    let serialized_cb = serde_cbor::to_vec(&codeb).expect("Serialization failed");
-                    self.database.put(key, serialized_cb)?;
-                } 
-            },
-            None /* Create Codebook (OnDisk, create it without looking for changes) */ => {
-                self.database.put(key, serde_cbor::to_vec(&codeb).expect("Serialization failed"))?;
-            }
-        }
-        Ok(())
-    }
-
-    /// this function will be called when first loading the codebook
-    pub fn load_codebook(&self) -> DBResult<Codebook> {
-        let key = b"codebook";
-        match self.database.get(key)? {
-            Some(codebook) /* Deserialize Codebook */ => {
-                Ok(serde_cbor::from_slice(&codebook).expect("Failed Deserializing:"))
-            },
-            None /* Create Codebook (InMemory) */ => {
-                Ok([Default::default(); CQ_K_CENTROIDS])
-            }
-        }
-        
-    }
-
-    pub fn persist_ivf(&self, ivf: InvertedIndex) -> DBResult<()> {
-        // same as persist_codebook
-        let key = b"ivf";
-        match self.database.get(key)? {
-            Some(db_ivf) /* Deserialize IVF & add embedding */ => {
-                // deserialize
-                let deserialized_ivf: InvertedIndex = serde_cbor::from_slice(&db_ivf).expect("Deserialization failed: ");
-
-                // add entry if changed
-                if ivf != deserialized_ivf {
-                    // remove current ivf
-                    self.database.delete(key)?;
-                    // serialize ivf
-                    let serialized_cb = serde_cbor::to_vec(&ivf).expect("Serialization failed");
-                    self.database.put(key, serialized_cb)?;
-                } 
-            },
-            None /* Create IVF (OnDisk, create it without looking for changes) */ => {
-                self.database.put(key, serde_cbor::to_vec(&ivf).expect("Serialization failed"))?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn load_ivf(&self) -> DBResult<InvertedIndex> {
-        // same as load_codebook
-        let key = b"ivf";
-        match self.database.get(key)? {
-            Some(ivf) /* Deserialize IVF */ => {
-                Ok(serde_cbor::from_slice(&ivf).expect("Error Deserializing: "))
-            },
-            None /* Create IVF (InMemory) */ => {
-                Ok(InvertedIndex::empty())
-            }
-        }
-    }
-
-
-}
-

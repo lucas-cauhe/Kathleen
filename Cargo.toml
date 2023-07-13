@@ -9,6 +9,7 @@ edition = "2021"
 avl = "0.7.1"
 derivative = "2.2.0"
 heapless = "0.7.16"
+log = "0.4.19"
 ordered-float = "3.7.0"
 rocksdb = "0.21.0"
 serde = { version = "1.0.166", features=["derive"] }

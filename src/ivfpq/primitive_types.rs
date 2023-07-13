@@ -6,12 +6,21 @@ use crate::ivfpq::ivfpq::{SEGMENT_DIM, EMBEDDING_M_SEGMENTS, CODE_SIZE, CQ_K_CEN
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Default)]
 pub struct Segment([f64; SEGMENT_DIM]);
 
+impl Segment {
+    pub fn new(src: [f64; SEGMENT_DIM]) -> Self {
+        Self(src)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Embedding([Segment; EMBEDDING_M_SEGMENTS]);
 
 impl Embedding {
     pub fn into_segments<'a>(&'a self) -> Iter<'a, Segment> {
         self.0.iter()
+    }
+    pub fn new(src: [Segment; EMBEDDING_M_SEGMENTS]) -> Self {
+        Self(src)
     }
 }
 

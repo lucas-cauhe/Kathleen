@@ -2,6 +2,8 @@ use serde::{Serialize, Deserialize, de::Visitor};
 use super::ivfpq::AvlWrapper;
 use super::primitive_types::IVListEntry;
 use avl::AvlTreeMap;
+#[macro_use]
+use log::debug;
 
 impl Serialize for AvlWrapper {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -87,6 +89,9 @@ mod tests {
         ivf.push(avl);
         let bytes = serde_cbor::to_vec(&ivf).unwrap();
         let des_ivf: InvertedIndex = serde_cbor::from_slice(&bytes).unwrap();
+        // only visible with -- --nocapture
+        println!("{:?}", des_ivf);
+        println!("{:?}", des_ivf);
         assert_eq!(ivf, des_ivf);
     }
 
