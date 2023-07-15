@@ -6,7 +6,7 @@ use super::primitive_types::PqCode;
 #[derive(Derivative, Clone)]
 #[derivative(PartialOrd, Ord, PartialEq, Eq, Debug)]
 pub struct HeapNode<'a> {
-    distance: NotNan<f32>,
+    distance: NotNan<f64>,
     #[derivative(Ord="ignore")]
     #[derivative(PartialOrd="ignore")]
     #[derivative(PartialEq="ignore")]
@@ -14,7 +14,7 @@ pub struct HeapNode<'a> {
 }
 
 impl<'a> HeapNode<'a> {
-    pub fn new(d: NotNan<f32>, c: &'a PqCode) -> Self {
+    pub fn new(d: NotNan<f64>, c: &'a PqCode) -> Self {
         Self { distance: d, code: c }
     }
 }
@@ -51,6 +51,8 @@ impl<T: Ord + PartialOrd + Clone, const N:usize> BinaryHeapWrapper<T, N> {
 
 #[cfg(test)]
 mod tests {
+    use crate::ivfpq::ivfpq::EMBEDDING_M_SEGMENTS;
+
     use super::*;
 
     #[test]
@@ -144,29 +146,29 @@ mod tests {
         // Let's add some scores...
         heap.push(HeapNode{
             distance: NotNan::new(25.333).unwrap(),
-            code: &[1]
+            code: &[1; EMBEDDING_M_SEGMENTS]
         }).unwrap();
         heap.push(HeapNode{
             distance: NotNan::new(12.4).unwrap(),
-            code: &[1]
+            code: &[1; EMBEDDING_M_SEGMENTS]
         }).unwrap();
         heap.push(HeapNode{
             distance: NotNan::new(1.6).unwrap(),
-            code: &[1]
+            code: &[1; EMBEDDING_M_SEGMENTS]
         }).unwrap();
         heap.push(HeapNode{
             distance: NotNan::new(13.16).unwrap(),
-            code: &[1]
+            code: &[1; EMBEDDING_M_SEGMENTS]
         }).unwrap();
         heap.push(HeapNode{
             distance: NotNan::new(22.43).unwrap(),
-            code: &[1]
+            code: &[1; EMBEDDING_M_SEGMENTS]
         }).unwrap();
 
         // Now peek shows the most important item in the heap.
         assert_eq!(heap.0.peek(), Some(&HeapNode{
             distance: NotNan::new(22.43).unwrap(),
-            code: &[1]
+            code: &[1; EMBEDDING_M_SEGMENTS]
         }));
 
         // We can check the length of a heap.
@@ -181,19 +183,19 @@ mod tests {
         // If we instead pop these scores, they should come back in order.
         assert_eq!(heap.0.pop(), Some(HeapNode{
             distance: NotNan::new(22.43).unwrap(),
-            code: &[1]
+            code: &[1; EMBEDDING_M_SEGMENTS]
         }));
         assert_eq!(heap.0.pop(), Some(HeapNode{
             distance: NotNan::new(13.16).unwrap(),
-            code: &[1]
+            code: &[1; EMBEDDING_M_SEGMENTS]
         }));
         assert_eq!(heap.0.pop(), Some(HeapNode{
             distance: NotNan::new(12.4).unwrap(),
-            code: &[1]
+            code: &[1; EMBEDDING_M_SEGMENTS]
         }));
         assert_eq!(heap.0.pop(), Some(HeapNode{
             distance: NotNan::new(1.6).unwrap(),
-            code: &[1]
+            code: &[1; EMBEDDING_M_SEGMENTS]
         }));
         assert_eq!(heap.0.pop(), None);
 

@@ -1,13 +1,17 @@
 
 use avl::map::AvlTreeMap;
+use ndarray::{Array2, Array1};
 use serde::{Serialize, Deserialize};
 use std::{ops::{Deref, DerefMut}, slice::Iter};
 use ordered_float::NotNan;
+
 use super::{
     maxheap_wrapper::{BinaryHeapWrapper, HeapNode},
     primitive_types::{Embedding, Clusters, IVListEntry, DistanceTable}
 };
-
+use linfa_clustering;
+use linfa::{self, prelude::Predict};
+use linfa_nn::distance::{L2Dist, Distance};
 // k's between subspaces k-means and coarse quantizer may differ, take it into account
 
 pub const EMBEDDING_DIM: usize = 12;
@@ -60,6 +64,15 @@ impl AvlWrapper {
     pub fn get_all<'a>(&'a self) -> Iter<'a, Box<IVListEntry>> {
         unimplemented!()
     }
+
+    pub fn add_embedding(&mut self, emb: &Embedding, cluster: Clusters, vec_id: u32, dt: DistanceTable) {
+        let code = emb.encode(dt);
+        let entry = IVListEntry::new(
+            code,
+            cluster
+        );
+        self.0.insert(vec_id, Box::new(entry));
+    }
 }
 
 impl Deref for AvlWrapper {
@@ -97,9 +110,9 @@ impl InvertedIndex {
     /// take from distance that is the lowest the formed codes what will give
     pub fn compute_distance_table(&self, query_vector: &Embedding, nearest_centroid: Clusters) -> DistanceTable {
         // get embeddings from rdb for nearest_centroid enty
-        /* let embs= self.get_cluster(nearest_centroid);
+        let embs= self.get_cluster(nearest_centroid);
         // compute distances
-        let distance_table = vec![];
+        let mut distance_table = vec![];
         let centroids = embs.get_centroids();
 
         for centroid in centroids {
@@ -109,13 +122,20 @@ impl InvertedIndex {
 
             let distances = c_segments
                 .zip(qv_segments)
-                .map(|(c_j, qv)| /* search for pre-built euclidean function */ euclidean(c_j, qv))
-                .collect::<[f32; EMBEDDING_M_SEGMENTS]>();
-
+                .map(|(c_j, qv)| L2Dist::distance(&L2Dist, Array1::from(c_j.to_vec()).view(), Array1::from(qv.to_vec()).view()));
+            let distances = {
+                let mut tmp = [0.0; EMBEDDING_M_SEGMENTS];
+                distances.enumerate().for_each(|(ind, d)| tmp[ind] = d);
+                tmp
+            };
             distance_table.push(distances);
         }
-        distance_table */
-        unimplemented!()
+        let distance_table = {
+            let mut tmp = [[0.0; EMBEDDING_M_SEGMENTS]; CENTROIDS_PER_SUBSPACE_CLUSTER];
+            distance_table.into_iter().enumerate().for_each(|(ind, dists)| tmp[ind] = dists);
+            tmp
+        };
+        distance_table
     }
 
     /// retrieves the nearest neighbor for the requested query vector
@@ -127,6 +147,11 @@ impl InvertedIndex {
         unimplemented!()
     }
 
+    pub fn add_embedding_to_cluster(&mut self, cluster: Clusters, emb: &Embedding, dt: DistanceTable) {
+        let avl: &mut AvlWrapper = self.0.get_mut(cluster as usize).unwrap();
+        avl.add_embedding(emb, cluster, next_id(), dt)
+    }
+
 }
 
 impl Deref for InvertedIndex {
@@ -135,14 +160,6 @@ impl Deref for InvertedIndex {
         &self.0
     }
 }
-
-
-// build coarse quantizer as struct interchangeable for IVlist
-// build coarse quantizer from IVList and viceversa
-// only difference is vector representation
-// switching between pqcodes and raw vectors will be runtime cost
-// each struct has its own thing
-
 
 // For each subspace you have to train that k-means, where D (dimensionalty of raw vector) has to be divisible
 // by m (number of subspaces (segments) inside that raw vector)
@@ -161,10 +178,52 @@ impl Deref for InvertedIndex {
 
 
 
+
 pub fn k_means(ividx: &mut InvertedIndex, embs: &[Embedding]) {
-    // search for a built k_means
+    use linfa_clustering::KMeans;
+    use linfa::{traits::Fit, DatasetBase};
+    use rand_xoshiro::Xoshiro256Plus;
+    use rand_xoshiro::rand_core::SeedableRng;
+    let seed = 42;
+    let rng = Xoshiro256Plus::seed_from_u64(seed);
+    let mut data = Array2::zeros((embs.len(), SEGMENT_DIM*EMBEDDING_M_SEGMENTS));
+    for ind in 0..embs.len() {
+        let emb = embs[ind].to_vec();
+        for each in 0..SEGMENT_DIM*EMBEDDING_M_SEGMENTS {
+            data[[ind, each]] = emb[each];
+        }
+    }
+    let obs = DatasetBase::from(data);
+
+    let model: KMeans<_, _> = KMeans::params_with_rng(CQ_K_CENTROIDS, rng)
+        .fit(&obs)
+        .expect("KMeans fitted");
+
+    // save it in the ividx
+    // for each embedding
+    for emb in embs {
+        // predict the cluster it belongs to
+        let new_obs = DatasetBase::from(Array1::from(emb.to_vec()));
+        let pred_cluster: Clusters = model.predict(&new_obs) as Clusters;
+        let dt: DistanceTable = ividx.compute_distance_table(emb, pred_cluster.clone());
+        // add it to the predicted ividx entry
+        ividx.add_embedding_to_cluster(pred_cluster, emb, dt)
+    }
+        
+        
+    
+    // save the model somehow (static or return it)
+
 } 
 
+fn next_id() -> u32 {
+    static mut ID: u32 = 1;
+    unsafe {
+        ID += 1;
+        ID
+    }
+    
+}
 
 pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding] ) -> Result<Vec<Vec<HeapNode<'a>>>, String> {
     
@@ -192,7 +251,7 @@ pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding] ) -> Res
                 let emb_dist = entry.get_code().iter()
                     .enumerate()
                     .map(|(subq, code)| dt[subq][*code as usize] )
-                    .sum::<f32>();
+                    .sum::<f64>();
                 if let Ok(distance) = NotNan::new(emb_dist) {
                     max_heap
                         .push(HeapNode::new(distance, entry.get_code()))
@@ -202,4 +261,29 @@ pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding] ) -> Res
         distance_results.push(max_heap.sorted());
     }
     Ok(distance_results)
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn it_searches() {
+        // get raw embeddings
+
+        // perform k_means
+
+        // add them to the db
+
+        // search
+    }
+
+    #[test]
+    fn k_means_works() {
+
+    }
+
+    #[test]
+    fn distance_table_gets_computed() {
+
+    }
 }

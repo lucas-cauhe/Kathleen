@@ -145,8 +145,8 @@ mod tests {
         let db = DatabaseWrapper::open(Path::new("./dbre")).expect("Opening failed: ");
         let mut ivf = db.load_ivf().unwrap();
         let mut avl = AvlWrapper::new();
-        avl.insert(123, Box::new(IVListEntry::new([1], 0)));
-        avl.insert(124, Box::new(IVListEntry::new([1], 1)));
+        avl.insert(123, Box::new(IVListEntry::new([1; EMBEDDING_M_SEGMENTS], 0)));
+        avl.insert(124, Box::new(IVListEntry::new([1; EMBEDDING_M_SEGMENTS], 1)));
         ivf.push(avl);
         let ivf_clone = ivf.clone();
         db.persist_ivf(ivf).unwrap();

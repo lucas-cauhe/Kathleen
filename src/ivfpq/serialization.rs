@@ -76,15 +76,15 @@ fn from_json(mut source: String) -> AvlTreeMap<u32, Box<IVListEntry>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ivfpq::ivfpq::{CODE_SIZE, InvertedIndex, AvlWrapper};
+    use crate::ivfpq::ivfpq::{CODE_SIZE, InvertedIndex, AvlWrapper, EMBEDDING_M_SEGMENTS};
 
     use super::*;
 
     #[test]
     fn serialization_works() {
         let mut avl = AvlWrapper::new();
-        avl.insert(123, Box::new(IVListEntry::new([1], 0)));
-        avl.insert(124, Box::new(IVListEntry::new([1], 1)));
+        avl.insert(123, Box::new(IVListEntry::new([1; EMBEDDING_M_SEGMENTS], 0)));
+        avl.insert(124, Box::new(IVListEntry::new([1; EMBEDDING_M_SEGMENTS], 1)));
         let mut ivf = InvertedIndex::empty();
         ivf.push(avl);
         let bytes = serde_cbor::to_vec(&ivf).unwrap();
@@ -98,8 +98,8 @@ mod tests {
     #[test]
     fn avl_tree_map_serialization_works() {
         let mut avl = AvlWrapper::new();
-        avl.insert(132, Box::new(IVListEntry::new([1; CODE_SIZE], 0)));
-        avl.insert(132, Box::new(IVListEntry::new([2; CODE_SIZE], 1)));
+        avl.insert(132, Box::new(IVListEntry::new([1; EMBEDDING_M_SEGMENTS], 0)));
+        avl.insert(132, Box::new(IVListEntry::new([2; EMBEDDING_M_SEGMENTS], 1)));
         let curr_avl = avl.clone();
         
         let avl_bytes = to_json(&avl);
