@@ -1,7 +1,10 @@
+use ndarray::Array1;
 use serde::{Deserialize, Serialize};
 use core::{slice::Iter, f64};
+use std::str::FromStr;
 
 use crate::ivfpq::ivfpq::{SEGMENT_DIM, EMBEDDING_M_SEGMENTS, CQ_K_CENTROIDS, CENTROIDS_PER_SUBSPACE_CLUSTER};
+
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Default)]
 pub struct Segment([f64; SEGMENT_DIM]);
@@ -27,6 +30,37 @@ impl Embedding {
         Self(src)
     }
 
+    pub fn from_base(src: Array1<f64>) -> Self {
+        let mut emb = [Segment([0.0; SEGMENT_DIM]); EMBEDDING_M_SEGMENTS];
+        let mut last = 0;
+        for segment in 0..EMBEDDING_M_SEGMENTS {
+            let mut seg = [0.0; SEGMENT_DIM];
+            for element in last..last+SEGMENT_DIM {
+                seg[element] = src[element];
+            }
+            last += SEGMENT_DIM;
+            emb[segment] = Segment(seg);
+        }
+        Embedding(emb)
+    }
+
+    pub fn read_from_str(src: &str) -> Self {
+        let mut string_src = src.to_string();
+        string_src = string_src.replace('[', "");
+        string_src = string_src.replace(']', "");
+        let mut src_iter = string_src.split(',').into_iter();
+        let mut embedding = [Segment::default(); EMBEDDING_M_SEGMENTS];
+        for seg in 0..EMBEDDING_M_SEGMENTS {
+            let mut segment = [0.0; SEGMENT_DIM];
+            for f in 0..SEGMENT_DIM {
+                let nxt = src_iter.next().unwrap().replace(' ', "");
+                println!("{nxt}");
+                segment[f] = f64::from_str(&nxt).unwrap();
+            }
+            embedding[seg] = Segment::new(segment);
+        }
+        Embedding::new(embedding)
+    }
 
     pub fn to_vec(&self) -> Vec<f64> {
         let mut arr = Vec::new();
@@ -63,12 +97,6 @@ pub(super) type DBResult<T> = Result<T, rocksdb::Error>; // may change this erro
 pub(super) type DistanceTable = [[f64; EMBEDDING_M_SEGMENTS]; CENTROIDS_PER_SUBSPACE_CLUSTER];
 pub(super) type Codebook = [Embedding; CQ_K_CENTROIDS];
 
-impl<> Into<Embedding> for PqCode {
-    fn into(self) -> Embedding {
-        unimplemented!()
-    }
-}
-
 fn code_from_src(source: &str) -> PqCode {
     let mut no_spaces = source.replace(' ', "");
     no_spaces.remove(0);
@@ -77,6 +105,8 @@ fn code_from_src(source: &str) -> PqCode {
     no_spaces.split(',').enumerate().for_each(|(ind, c)| code[ind] = c.parse::<u32>().unwrap() as Clusters );
     code
 }
+
+
 
 // this is what gets stored by rocksdb (the value, index is the key also in rdb)
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

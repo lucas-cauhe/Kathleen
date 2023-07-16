@@ -1,4 +1,3 @@
-
 use avl::map::AvlTreeMap;
 use ndarray::{Array2, Array1};
 use serde::{Serialize, Deserialize};
@@ -7,7 +6,7 @@ use ordered_float::NotNan;
 
 use super::{
     maxheap_wrapper::{BinaryHeapWrapper, HeapNode},
-    primitive_types::{Embedding, Clusters, IVListEntry, DistanceTable}
+    primitive_types::{Embedding, Clusters, IVListEntry, DistanceTable, Codebook}
 };
 use linfa_clustering;
 use linfa::{self, prelude::Predict};
@@ -24,22 +23,8 @@ pub const RETRIEVE_KNN: usize = 10;
 pub const CQ_K_CENTROIDS: usize = 8;
 pub const CODE_SIZE: usize = 1;
 
-/* 
-impl IntoCentroid for IVListEntry {
-    fn into_centroid<'a>(&'a self) -> Centroid<'a> {
-        Centroid((
-            self.cluster,
-            &self.pq_code.into()
-        ))
-    }
-} */
-
 /// holds tuple (cluster_no, embedding)
 pub struct Centroid<'a> ((Clusters, &'a Embedding));
-
-pub trait IntoCentroid {
-    fn into_centroid<'a>(&'a self) -> Centroid<'a>;
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AvlWrapper(AvlTreeMap<u32, Box<IVListEntry>>);
@@ -51,13 +36,6 @@ impl AvlWrapper {
 
     pub fn from(src: AvlTreeMap<u32, Box<IVListEntry>>) -> Self {
         Self(src)
-    }
-
-    /// centroids should have the lowest ids in the tree
-    pub fn get_centroids<'a>(&'a self) -> Vec<Centroid<'a>> {
-        // perform CENTROIDS_PER_SUBSPACE_CLUSTER iterations in-order through self 
-        //self.0.iter().take(CENTROIDS_PER_SUBSPACE_CLUSTER).map(|(key, dtype)| dtype.into_centroid()).collect::<Centroid<'a>>()
-        unimplemented!()
     }
 
     // get all the elements in-order
@@ -108,16 +86,13 @@ impl InvertedIndex {
     /// Table containing distance to each list entry segment for every centroid in Codebook from every query vector segment
     /// K x N table
     /// take from distance that is the lowest the formed codes what will give
-    pub fn compute_distance_table(&self, query_vector: &Embedding, nearest_centroid: Clusters) -> DistanceTable {
-        // get embeddings from rdb for nearest_centroid enty
-        let embs= self.get_cluster(nearest_centroid);
+    pub fn compute_distance_table(query_vector: &Embedding, nearest_centroid: Clusters, codebook: &Codebook) -> DistanceTable {
         // compute distances
         let mut distance_table = vec![];
-        let centroids = embs.get_centroids();
 
-        for centroid in centroids {
+        for centroid in codebook {
 
-            let c_segments = centroid.0.1.into_segments();
+            let c_segments = centroid.into_segments();
             let qv_segments = query_vector.into_segments();
 
             let distances = c_segments
@@ -179,7 +154,7 @@ impl Deref for InvertedIndex {
 
 
 
-pub fn k_means(ividx: &mut InvertedIndex, embs: &[Embedding]) {
+pub fn k_means(ividx: &mut InvertedIndex, embs: &[Embedding]) -> Codebook {
     use linfa_clustering::KMeans;
     use linfa::{traits::Fit, DatasetBase};
     use rand_xoshiro::Xoshiro256Plus;
@@ -199,20 +174,29 @@ pub fn k_means(ividx: &mut InvertedIndex, embs: &[Embedding]) {
         .fit(&obs)
         .expect("KMeans fitted");
 
+    // create codebook
+    let codebook = model.centroids();
+    let codebook: Codebook = {
+        let mut tmp: Codebook = [Embedding::default(); CQ_K_CENTROIDS];
+        codebook.rows().into_iter().enumerate().for_each(|(ind, emb)| tmp[ind] = Embedding::from_base(emb.to_owned()));
+        tmp
+    };
     // save it in the ividx
     // for each embedding
     for emb in embs {
         // predict the cluster it belongs to
         let new_obs = DatasetBase::from(Array1::from(emb.to_vec()));
         let pred_cluster: Clusters = model.predict(&new_obs) as Clusters;
-        let dt: DistanceTable = ividx.compute_distance_table(emb, pred_cluster.clone());
+        let dt: DistanceTable = InvertedIndex::compute_distance_table(emb, pred_cluster.clone(), &codebook);
         // add it to the predicted ividx entry
         ividx.add_embedding_to_cluster(pred_cluster, emb, dt)
     }
         
-        
+    
     
     // save the model somehow (static or return it)
+
+    codebook
 
 } 
 
@@ -225,7 +209,7 @@ fn next_id() -> u32 {
     
 }
 
-pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding] ) -> Result<Vec<Vec<HeapNode<'a>>>, String> {
+pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding], codebook: &Codebook) -> Result<Vec<Vec<HeapNode<'a>>>, String> {
     
     // this are centroids from the original coarse quantizer trained with raw vectors
     // this is used just to know which cluster does each query_vector belongs to
@@ -243,7 +227,7 @@ pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding] ) -> Res
 
     let mut distance_results = Vec::new();
     for (ind, resid) in residuals.iter().enumerate() {
-        let dt = ividx.compute_distance_table(resid, cq_nearest_centroids[ind].0.0);
+        let dt = InvertedIndex::compute_distance_table(resid, cq_nearest_centroids[ind].0.0, codebook);
         let mut max_heap: BinaryHeapWrapper<HeapNode<'_>, {RETRIEVE_KNN}> = BinaryHeapWrapper::new();
         let embs = ividx.get_cluster(cq_nearest_centroids[ind].0.0);
         embs.get_all()
@@ -265,6 +249,13 @@ pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding] ) -> Res
 
 #[cfg(test)]
 mod tests {
+    use linfa_nn::distance::{L2Dist, Distance};
+    use ndarray::Array1;
+
+    use crate::ivfpq::{primitive_types::{DistanceTable, Codebook, Embedding, Segment, IVListEntry}, ivfpq::{CQ_K_CENTROIDS, EMBEDDING_M_SEGMENTS, AvlWrapper, SEGMENT_DIM}};
+
+    use super::InvertedIndex;
+
 
     #[test]
     fn it_searches() {
@@ -284,6 +275,70 @@ mod tests {
 
     #[test]
     fn distance_table_gets_computed() {
-
+        let test_embeddings_per_cluster = 4; 
+        // create codebook
+        let mut codebook: Codebook = [Embedding::default(); CQ_K_CENTROIDS];
+        let codebook_embs_file = std::fs::read_to_string("tests/codebook_test_embeddings").unwrap();
+        let mut codebook_embs_file = codebook_embs_file.split('\n').into_iter();
+        for element in 0..CQ_K_CENTROIDS {
+            codebook[element] = Embedding::read_from_str(codebook_embs_file.next().unwrap());
+        }
+        // create query_vector (in real scenarios should be the residual)
+        let query_vector: Embedding = Embedding::read_from_str(
+            std::fs::read_to_string("./tests/query_vectors").unwrap().split('\n').into_iter().next().unwrap()
+        );
+        let dt: DistanceTable = InvertedIndex::compute_distance_table(&query_vector, 0, &codebook);
+        let get_distance = |c_j: Segment, qv: Segment| L2Dist::distance(&L2Dist, Array1::from(c_j.to_vec()).view(), Array1::from(qv.to_vec()).view()) ;
+        let expected_dt: DistanceTable = [
+            [
+                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+            ],
+            [
+                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+            ],
+            [
+                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+            ],
+            [
+                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+            ],
+            [
+                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+            ],
+            [
+                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+            ],
+            [
+                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+            ],
+            [
+                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+            ]
+        ];
+        assert_eq!(dt, expected_dt);
     }
 }

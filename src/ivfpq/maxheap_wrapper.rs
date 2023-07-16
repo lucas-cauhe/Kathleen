@@ -32,12 +32,12 @@ impl<T: Ord + PartialOrd + Clone, const N:usize> BinaryHeapWrapper<T, N> {
             let peek = self.0.peek().unwrap();
             if peek > &item {
                 self.0.pop();
-                return unsafe {self.0.push(item)};
+                return self.0.push(item);
             } else {
                 Ok(())
             }
         } else {
-            return unsafe {self.0.push(item)};
+            return self.0.push(item);
         }
     } 
     pub fn sorted(self) -> Vec<T> {
