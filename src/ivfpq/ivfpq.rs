@@ -1,8 +1,9 @@
 use avl::map::AvlTreeMap;
 use ndarray::{Array2, Array1};
 use serde::{Serialize, Deserialize};
-use std::{ops::{Deref, DerefMut}, slice::Iter};
+use std::{ops::{Deref, DerefMut}, slice::Iter, borrow::BorrowMut};
 use ordered_float::NotNan;
+use core::cell::{RefCell, RefMut};
 
 use super::{
     maxheap_wrapper::{BinaryHeapWrapper, HeapNode},
@@ -39,12 +40,14 @@ impl AvlWrapper {
     }
 
     // get all the elements in-order
-    pub fn get_all<'a>(&'a self) -> Iter<'a, Box<IVListEntry>> {
-        unimplemented!()
+    pub fn get_all(&self) -> Vec<&Box<IVListEntry>> {
+        self.0.iter()
+            .map(|(k, v)| v)
+            .collect::<Vec<&Box<IVListEntry>>>() 
     }
 
-    pub fn add_embedding(&mut self, emb: &Embedding, cluster: Clusters, vec_id: u32, dt: DistanceTable) {
-        let code = emb.encode(dt);
+    pub fn add_embedding(&mut self, emb: &Embedding, cluster: Clusters, vec_id: u32, cb: &Codebook) {
+        let code = emb.encode(cb);
         let entry = IVListEntry::new(
             code,
             cluster
@@ -66,7 +69,6 @@ impl DerefMut for AvlWrapper {
     }
 }
 
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct InvertedIndex(Vec<AvlWrapper>);
 
@@ -79,14 +81,17 @@ impl InvertedIndex {
         self.0.push(value)
     }
     
-    pub fn get_cluster(&self, clust_no: Clusters) -> &AvlWrapper {
-        &self.0[clust_no as usize]
+    pub fn get_cluster(&self, clust_no: Clusters) ->  &AvlWrapper {
+          &self.0[clust_no as usize] 
+    }
+    pub fn get_cluster_mut(&mut self, clust_no: Clusters) ->  &mut AvlWrapper {
+          &mut self.0[clust_no as usize] 
     }
 
     /// Table containing distance to each list entry segment for every centroid in Codebook from every query vector segment
     /// K x N table
     /// take from distance that is the lowest the formed codes what will give
-    pub fn compute_distance_table(query_vector: &Embedding, nearest_centroid: Clusters, codebook: &Codebook) -> DistanceTable {
+    pub fn compute_distance_table(query_vector: &Embedding, codebook: &Codebook) -> DistanceTable {
         // compute distances
         let mut distance_table = vec![];
 
@@ -122,9 +127,9 @@ impl InvertedIndex {
         unimplemented!()
     }
 
-    pub fn add_embedding_to_cluster(&mut self, cluster: Clusters, emb: &Embedding, dt: DistanceTable) {
+    pub fn add_embedding_to_cluster(&mut self, cluster: Clusters, emb: &Embedding, cb: &Codebook) {
         let avl: &mut AvlWrapper = self.0.get_mut(cluster as usize).unwrap();
-        avl.add_embedding(emb, cluster, next_id(), dt)
+        avl.add_embedding(emb, cluster, next_id(), cb)
     }
 
 }
@@ -187,9 +192,9 @@ pub fn k_means(ividx: &mut InvertedIndex, embs: &[Embedding]) -> Codebook {
         // predict the cluster it belongs to
         let new_obs = DatasetBase::from(Array1::from(emb.to_vec()));
         let pred_cluster: Clusters = model.predict(&new_obs) as Clusters;
-        let dt: DistanceTable = InvertedIndex::compute_distance_table(emb, pred_cluster.clone(), &codebook);
+        let dt: DistanceTable = InvertedIndex::compute_distance_table(emb,&codebook);
         // add it to the predicted ividx entry
-        ividx.add_embedding_to_cluster(pred_cluster, emb, dt)
+        ividx.add_embedding_to_cluster(pred_cluster, emb, &codebook)
     }
         
     
@@ -227,10 +232,10 @@ pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding], codeboo
 
     let mut distance_results = Vec::new();
     for (ind, resid) in residuals.iter().enumerate() {
-        let dt = InvertedIndex::compute_distance_table(resid, cq_nearest_centroids[ind].0.0, codebook);
+        let dt = InvertedIndex::compute_distance_table(resid, codebook);
         let mut max_heap: BinaryHeapWrapper<HeapNode<'_>, {RETRIEVE_KNN}> = BinaryHeapWrapper::new();
         let embs = ividx.get_cluster(cq_nearest_centroids[ind].0.0);
-        embs.get_all()
+        embs.get_all().iter()
             .for_each(|entry| {
                 let emb_dist = entry.get_code().iter()
                     .enumerate()
@@ -273,72 +278,110 @@ mod tests {
 
     }
 
-    #[test]
-    fn distance_table_gets_computed() {
-        let test_embeddings_per_cluster = 4; 
-        // create codebook
-        let mut codebook: Codebook = [Embedding::default(); CQ_K_CENTROIDS];
-        let codebook_embs_file = std::fs::read_to_string("tests/codebook_test_embeddings").unwrap();
-        let mut codebook_embs_file = codebook_embs_file.split('\n').into_iter();
-        for element in 0..CQ_K_CENTROIDS {
-            codebook[element] = Embedding::read_from_str(codebook_embs_file.next().unwrap());
+    mod inverted_index {
+
+        use crate::ivfpq::ivfpq::next_id;
+        use crate::ivfpq::primitive_types::PqCode;
+        use super::*;
+
+        #[test]
+        fn adding_embeddings_to_cluster() {
+            let embs_per_cluster = 3;
+
+            // declare pre-trained codebook
+            // 2 of which are taken from insertion embeddings
+            let mut cb: Codebook = [Embedding::default(); CQ_K_CENTROIDS];
+            let codebook_embs_file = std::fs::read_to_string("tests/codebook_test_embeddings").unwrap();
+            let mut codebook_embs_file = codebook_embs_file.split('\n').into_iter();
+            for element in 0..CQ_K_CENTROIDS {
+                cb[element] = Embedding::read_from_str(codebook_embs_file.next().unwrap());
+            }
+            let mut ividx = InvertedIndex::empty();
+            for _ in 0..CQ_K_CENTROIDS {
+                let wrapper = AvlWrapper::new();
+                ividx.push(wrapper);
+            }
+            let wrap1 = ividx.get_cluster_mut(1);
+            let test_embs = std::fs::read_to_string("tests/test_embeddings").unwrap();
+            let test_embs = test_embs.split('\n').into_iter();
+            let embs_wrap1  = test_embs.take(embs_per_cluster).map(|emb| Embedding::read_from_str(emb));
+            embs_wrap1.for_each(|emb| wrap1.add_embedding(&emb, 1, next_id(), &cb));
+            // assert embeddings in both clusters match the specified in txt file
+            let embeddings_clust_1 = ividx.get_cluster(1).get_all()
+                .iter().map(|v| v.get_code().clone()).collect::<Vec<PqCode>>();
+            assert_eq!(
+                vec![[1_u8, 3_u8, 3_u8, 3_u8], [0_u8, 3_u8, 3_u8, 3_u8], [1_u8, 3_u8, 0_u8, 3_u8]], embeddings_clust_1
+                );
+
         }
-        // create query_vector (in real scenarios should be the residual)
-        let query_vector: Embedding = Embedding::read_from_str(
-            std::fs::read_to_string("./tests/query_vectors").unwrap().split('\n').into_iter().next().unwrap()
-        );
-        let dt: DistanceTable = InvertedIndex::compute_distance_table(&query_vector, 0, &codebook);
-        let get_distance = |c_j: Segment, qv: Segment| L2Dist::distance(&L2Dist, Array1::from(c_j.to_vec()).view(), Array1::from(qv.to_vec()).view()) ;
-        let expected_dt: DistanceTable = [
-            [
-                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
-            ],
-            [
-                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
-            ],
-            [
-                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
-            ],
-            [
-                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
-            ],
-            [
-                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
-            ],
-            [
-                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
-            ],
-            [
-                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
-            ],
-            [
-                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
-                get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
-            ]
-        ];
-        assert_eq!(dt, expected_dt);
+
+        #[test]
+        fn distance_table_gets_computed() {
+            // create codebook
+            let mut codebook: Codebook = [Embedding::default(); CQ_K_CENTROIDS];
+            let codebook_embs_file = std::fs::read_to_string("tests/codebook_test_embeddings").unwrap();
+            let mut codebook_embs_file = codebook_embs_file.split('\n').into_iter();
+            for element in 0..CQ_K_CENTROIDS {
+                codebook[element] = Embedding::read_from_str(codebook_embs_file.next().unwrap());
+            }
+            // create query_vector (in real scenarios should be the residual)
+            let query_vector: Embedding = Embedding::read_from_str(
+                std::fs::read_to_string("./tests/query_vectors").unwrap().split('\n').into_iter().next().unwrap()
+            );
+            let dt: DistanceTable = InvertedIndex::compute_distance_table(&query_vector, &codebook);
+            let get_distance = |c_j: Segment, qv: Segment| L2Dist::distance(&L2Dist, Array1::from(c_j.to_vec()).view(), Array1::from(qv.to_vec()).view()) ;
+            let expected_dt: DistanceTable = [
+                [
+                    get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+                ],
+                [
+                    get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+                ],
+                [
+                    get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+                ],
+                [
+                    get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+                ],
+                [
+                    get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([1.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+                ],
+                [
+                    get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([2.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+                ],
+                [
+                    get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([3.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+                ],
+                [
+                    get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM])),
+                    get_distance(Segment::new([4.0; SEGMENT_DIM]), Segment::new([1.0; SEGMENT_DIM]))
+                ]
+            ];
+            assert_eq!(dt, expected_dt);
+        }
     }
+    
 }

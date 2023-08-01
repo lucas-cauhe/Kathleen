@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use core::{slice::Iter, f64};
 use std::str::FromStr;
 
-use crate::ivfpq::ivfpq::{SEGMENT_DIM, EMBEDDING_M_SEGMENTS, CQ_K_CENTROIDS, CENTROIDS_PER_SUBSPACE_CLUSTER};
+use crate::ivfpq::ivfpq::{SEGMENT_DIM, EMBEDDING_M_SEGMENTS, CQ_K_CENTROIDS, CENTROIDS_PER_SUBSPACE_CLUSTER, InvertedIndex};
 
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Default)]
@@ -70,15 +70,17 @@ impl Embedding {
         arr
     }
 
-    pub fn encode(&self, dt: DistanceTable) -> PqCode {
+    pub fn encode(&self, cb: &Codebook) -> PqCode {
+        let dt = InvertedIndex::compute_distance_table(&self, cb);
         let mut mins_array: Vec<(Clusters, f64)> /* (clust_no, min_dist) */= vec![(0, std::f64::MAX); EMBEDDING_M_SEGMENTS];
         dt.iter()
             .enumerate()
             .for_each(|(clust_no, next_cluster)| next_cluster.iter().enumerate().for_each(|(seg_no, next_seg)| {
                 if &mins_array[seg_no].1 > next_seg {
-                    mins_array[seg_no] = (seg_no as u8, next_seg.clone());
+                    mins_array[seg_no] = (clust_no as u8, next_seg.clone());
                 }
             }));
+        println!("{:?}", mins_array);
         let mut code = [0; EMBEDDING_M_SEGMENTS];
         mins_array.into_iter().enumerate().for_each(|(ind, (clust, _))| code[ind] = clust);
         code
@@ -144,3 +146,31 @@ impl ToString for IVListEntry {
         format!("{:?};{}", self.pq_code,self.cluster)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ivfpq::ivfpq::InvertedIndex;
+   #[test]
+   fn encoding_works() {
+        let embs_per_cluster = 3;
+        let mut cb: Codebook = [Embedding::default(); CQ_K_CENTROIDS];
+        let codebook_embs_file = std::fs::read_to_string("tests/codebook_test_embeddings").unwrap();
+        let mut codebook_embs_file = codebook_embs_file.split('\n').into_iter();
+        for element in 0..CQ_K_CENTROIDS {
+            cb[element] = Embedding::read_from_str(codebook_embs_file.next().unwrap());
+        }
+       let test_embs = std::fs::read_to_string("tests/test_embeddings").unwrap();
+       let test_embs = test_embs.split('\n').into_iter();
+       let embs_to_encode  = test_embs.take(embs_per_cluster).map(|emb| Embedding::read_from_str(emb));
+       let encoded_embs = embs_to_encode
+           .map(|emb| emb.encode(&cb).clone())
+           .collect::<Vec<PqCode>>();
+       
+        assert_eq!(
+            vec![[1_u8, 3_u8, 3_u8, 3_u8], [0_u8, 3_u8, 3_u8, 3_u8], [1_u8, 3_u8, 0_u8, 3_u8]], encoded_embs
+            );
+
+   }
+}
+
