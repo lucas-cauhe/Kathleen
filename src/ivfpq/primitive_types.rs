@@ -36,7 +36,7 @@ impl Embedding {
         for segment in 0..EMBEDDING_M_SEGMENTS {
             let mut seg = [0.0; SEGMENT_DIM];
             for element in last..last+SEGMENT_DIM {
-                seg[element] = src[element];
+                seg[element-last] = src[element];
             }
             last += SEGMENT_DIM;
             emb[segment] = Segment(seg);
@@ -76,11 +76,10 @@ impl Embedding {
         dt.iter()
             .enumerate()
             .for_each(|(clust_no, next_cluster)| next_cluster.iter().enumerate().for_each(|(seg_no, next_seg)| {
-                if &mins_array[seg_no].1 > next_seg {
+                if &mins_array[seg_no].1 > next_seg  {
                     mins_array[seg_no] = (clust_no as u8, next_seg.clone());
                 }
             }));
-        println!("{:?}", mins_array);
         let mut code = [0; EMBEDDING_M_SEGMENTS];
         mins_array.into_iter().enumerate().for_each(|(ind, (clust, _))| code[ind] = clust);
         code

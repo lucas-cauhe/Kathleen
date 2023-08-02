@@ -1,9 +1,9 @@
 use avl::map::AvlTreeMap;
 use ndarray::{Array2, Array1};
 use serde::{Serialize, Deserialize};
-use std::{ops::{Deref, DerefMut}, slice::Iter, borrow::BorrowMut};
+use std::ops::{Deref, DerefMut};
 use ordered_float::NotNan;
-use core::cell::{RefCell, RefMut};
+use std::marker::PhantomData;
 
 use super::{
     maxheap_wrapper::{BinaryHeapWrapper, HeapNode},
@@ -23,6 +23,7 @@ pub const K_MAX_CENTROIDS: usize = EMBEDDING_M_SEGMENTS * CENTROIDS_PER_SUBSPACE
 pub const RETRIEVE_KNN: usize = 10;
 pub const CQ_K_CENTROIDS: usize = 8;
 pub const CODE_SIZE: usize = 1;
+pub const EMBEDDINGS_PER_CLUSTER: usize = 3;
 
 /// holds tuple (cluster_no, embedding)
 pub struct Centroid<'a> ((Clusters, &'a Embedding));
@@ -74,7 +75,12 @@ pub struct InvertedIndex(Vec<AvlWrapper>);
 
 impl InvertedIndex {
     pub fn empty() -> Self {
-        Self(Vec::with_capacity(CQ_K_CENTROIDS))
+        let mut ividx = Vec::with_capacity(CQ_K_CENTROIDS);
+        for _ in 0..CQ_K_CENTROIDS {
+            let wrapper = AvlWrapper::new();
+            ividx.push(wrapper);
+        }
+        Self(ividx)
     }
 
     pub fn push(&mut self, value: AvlWrapper) {
@@ -155,53 +161,57 @@ impl Deref for InvertedIndex {
 // next you go over all the pq_codes in the coarse quantizer's cluster to which the query vector associated centoid is closest
 // there you can get the distance to every encoded vector and perform KNN
 
+use linfa_clustering::KMeans;
 
+pub struct Model {
+  pub model: Option<KMeans<f64, L2Dist>>
+}
 
-
-
-pub fn k_means(ividx: &mut InvertedIndex, embs: &[Embedding]) -> Codebook {
-    use linfa_clustering::KMeans;
-    use linfa::{traits::Fit, DatasetBase};
-    use rand_xoshiro::Xoshiro256Plus;
-    use rand_xoshiro::rand_core::SeedableRng;
-    let seed = 42;
-    let rng = Xoshiro256Plus::seed_from_u64(seed);
-    let mut data = Array2::zeros((embs.len(), SEGMENT_DIM*EMBEDDING_M_SEGMENTS));
-    for ind in 0..embs.len() {
-        let emb = embs[ind].to_vec();
-        for each in 0..SEGMENT_DIM*EMBEDDING_M_SEGMENTS {
-            data[[ind, each]] = emb[each];
+impl Model {
+    pub fn new() -> Self {Self{model: None}}
+    pub fn k_means(&mut self, ividx: &mut InvertedIndex, embs: &[Embedding]) -> Codebook {
+        use linfa::{traits::Fit, DatasetBase};
+        use rand_xoshiro::Xoshiro256Plus;
+        use rand_xoshiro::rand_core::SeedableRng;
+        let seed = 42;
+        let rng = Xoshiro256Plus::seed_from_u64(seed);
+        let mut data = Array2::zeros((embs.len(), SEGMENT_DIM*EMBEDDING_M_SEGMENTS));
+        for ind in 0..embs.len() {
+            let emb = embs[ind].to_vec();
+            for each in 0..SEGMENT_DIM*EMBEDDING_M_SEGMENTS {
+                data[[ind, each]] = emb[each];
+            }
         }
-    }
-    let obs = DatasetBase::from(data);
-
-    let model: KMeans<_, _> = KMeans::params_with_rng(CQ_K_CENTROIDS, rng)
-        .fit(&obs)
-        .expect("KMeans fitted");
-
-    // create codebook
-    let codebook = model.centroids();
-    let codebook: Codebook = {
-        let mut tmp: Codebook = [Embedding::default(); CQ_K_CENTROIDS];
-        codebook.rows().into_iter().enumerate().for_each(|(ind, emb)| tmp[ind] = Embedding::from_base(emb.to_owned()));
-        tmp
-    };
-    // save it in the ividx
-    // for each embedding
-    for emb in embs {
-        // predict the cluster it belongs to
-        let new_obs = DatasetBase::from(Array1::from(emb.to_vec()));
-        let pred_cluster: Clusters = model.predict(&new_obs) as Clusters;
-        let dt: DistanceTable = InvertedIndex::compute_distance_table(emb,&codebook);
-        // add it to the predicted ividx entry
-        ividx.add_embedding_to_cluster(pred_cluster, emb, &codebook)
-    }
+        let obs = DatasetBase::from(data);
         
-    
-    
-    // save the model somehow (static or return it)
+        let model = 
+            match &self.model {
+                Some(m) => m,
+                None => { self.model = Some(KMeans::params_with_rng(CQ_K_CENTROIDS, rng)
+                    .fit(&obs)
+                    .expect("KMeans fitted"));
+                self.model.as_ref().unwrap()}
+        };
 
-    codebook
+        // create codebook
+        let codebook = model.centroids();
+        let codebook: Codebook = {
+            let mut tmp: Codebook = [Embedding::default(); CQ_K_CENTROIDS];
+            codebook.rows().into_iter().enumerate().for_each(|(ind, emb)| tmp[ind] = Embedding::from_base(emb.to_owned()));
+            tmp
+        };
+        // save it in the ividx
+        // for each embedding
+        for emb in embs {
+            // predict the cluster it belongs to
+            let new_obs = DatasetBase::from(Array1::from(emb.to_vec()));
+            let pred_cluster: Clusters = model.predict(&new_obs) as Clusters;
+            // add it to the predicted ividx entry
+            ividx.add_embedding_to_cluster(pred_cluster, emb, &codebook)
+        }
+        // save the model somehow (static or return it)
+        codebook
+    }
 
 } 
 
@@ -259,7 +269,7 @@ mod tests {
 
     use crate::ivfpq::{primitive_types::{DistanceTable, Codebook, Embedding, Segment, IVListEntry}, ivfpq::{CQ_K_CENTROIDS, EMBEDDING_M_SEGMENTS, AvlWrapper, SEGMENT_DIM}};
 
-    use super::InvertedIndex;
+    use super::*;
 
 
     #[test]
@@ -272,10 +282,33 @@ mod tests {
 
         // search
     }
-
+    
+    // weirdo but works
     #[test]
     fn k_means_works() {
-
+       let mut ividx = InvertedIndex::empty();
+       let mut model = Model::new();
+       let mut embs_list = vec![];
+       let test_embs_str = std::fs::read_to_string("tests/k_means_test_embs").unwrap();
+        let mut test_embs = test_embs_str.split('\n').into_iter();
+        for _ in 0..EMBEDDINGS_PER_CLUSTER*CENTROIDS_PER_SUBSPACE_CLUSTER {
+            embs_list.push(Embedding::read_from_str(test_embs.next().unwrap()));
+        }
+       let codebook = model.k_means(&mut ividx, &embs_list);
+       // check that all codebook embs are found in their respective ividx entry
+       for (cluster_no, centroid) in codebook.iter().enumerate() {
+           //let found_centroid = ividx
+           //    .get_cluster(cluster_no as u8)
+           //    .iter()
+           //    .filter(|emb| emb.1.get_code().clone() == centroid.encode(&codebook))
+           //    .collect::<Vec<_>>();
+           //
+           //assert_eq!(found_centroid.len(), 1);
+           println!("------Cluster {cluster_no}-----");
+           println!("Centroid code: {:?}", centroid.encode(&codebook));
+           println!("Ividx embs: {:?}", ividx.get_cluster(cluster_no as u8));
+       }
+       // list all the embeddings and check there is no one left from the embs_list
     }
 
     mod inverted_index {
@@ -297,10 +330,6 @@ mod tests {
                 cb[element] = Embedding::read_from_str(codebook_embs_file.next().unwrap());
             }
             let mut ividx = InvertedIndex::empty();
-            for _ in 0..CQ_K_CENTROIDS {
-                let wrapper = AvlWrapper::new();
-                ividx.push(wrapper);
-            }
             let wrap1 = ividx.get_cluster_mut(1);
             let test_embs = std::fs::read_to_string("tests/test_embeddings").unwrap();
             let test_embs = test_embs.split('\n').into_iter();
