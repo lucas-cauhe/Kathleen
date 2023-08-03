@@ -1,4 +1,5 @@
 use avl::map::AvlTreeMap;
+use linfa::{traits::Fit, DatasetBase};
 use ndarray::{Array2, Array1};
 use serde::{Serialize, Deserialize};
 use std::ops::{Deref, DerefMut};
@@ -125,12 +126,17 @@ impl InvertedIndex {
     }
 
     /// retrieves the nearest neighbor for the requested query vector
-    pub fn get_nearest_centroid(&self, query_vector: &Embedding) -> Centroid {
-        unimplemented!()
+    pub fn get_nearest_centroid<'a>(&self, model: &Model, query_vector: &Embedding, codebook: &'a Codebook) -> Result<Centroid<'a>, String> {
+       let predicted_cluster = model.predict(query_vector)?;
+       Ok(Centroid((predicted_cluster.clone(), &codebook[predicted_cluster as usize])))
     }
 
     fn compute_residual(&self, v1: &Embedding, v2: &Embedding) -> Embedding {
-        unimplemented!()
+       let ndarray_emb1 =  Array1::from(v1.to_vec());
+       let ndarray_emb2 =  Array1::from(v2.to_vec());
+       Embedding::from_base(
+           ndarray_emb1 - ndarray_emb2
+       )
     }
 
     pub fn add_embedding_to_cluster(&mut self, cluster: Clusters, emb: &Embedding, cb: &Codebook) {
@@ -169,8 +175,16 @@ pub struct Model {
 
 impl Model {
     pub fn new() -> Self {Self{model: None}}
+    pub fn predict(&self, qv: &Embedding) -> Result<Clusters, String> {
+       match &self.model {
+           Some(m) => {
+               let obs = DatasetBase::from(Array1::from(qv.to_vec()));
+               Ok(m.predict(&obs) as Clusters)
+           },
+           None => Err("model not trained".to_string())
+       }
+    }
     pub fn k_means(&mut self, ividx: &mut InvertedIndex, embs: &[Embedding]) -> Codebook {
-        use linfa::{traits::Fit, DatasetBase};
         use rand_xoshiro::Xoshiro256Plus;
         use rand_xoshiro::rand_core::SeedableRng;
         let seed = 42;
@@ -224,13 +238,13 @@ fn next_id() -> u32 {
     
 }
 
-pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding], codebook: &Codebook) -> Result<Vec<Vec<HeapNode<'a>>>, String> {
+pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding], codebook: &Codebook, model: &Model) -> Result<Vec<Vec<HeapNode<'a>>>, String> {
     
     // this are centroids from the original coarse quantizer trained with raw vectors
     // this is used just to know which cluster does each query_vector belongs to
     let cq_nearest_centroids = query_vectors
         .iter()
-        .map(|emb| /* this should be a call to the coarse quantizer */ ividx.get_nearest_centroid(emb))
+        .map(|emb| /* this should be a call to the coarse quantizer */ ividx.get_nearest_centroid(model, emb, codebook).expect("Error getting nearest centroid: "))
         .collect::<Vec<Centroid>>();
 
     
@@ -249,7 +263,7 @@ pub fn search<'a>(ividx: &'a InvertedIndex, query_vectors: &[Embedding], codeboo
             .for_each(|entry| {
                 let emb_dist = entry.get_code().iter()
                     .enumerate()
-                    .map(|(subq, code)| dt[subq][*code as usize] )
+                    .map(|(subq, code)| dt[*code as usize][subq] )
                     .sum::<f64>();
                 if let Ok(distance) = NotNan::new(emb_dist) {
                     max_heap
@@ -267,20 +281,37 @@ mod tests {
     use linfa_nn::distance::{L2Dist, Distance};
     use ndarray::Array1;
 
-    use crate::ivfpq::{primitive_types::{DistanceTable, Codebook, Embedding, Segment, IVListEntry}, ivfpq::{CQ_K_CENTROIDS, EMBEDDING_M_SEGMENTS, AvlWrapper, SEGMENT_DIM}};
+    use crate::ivfpq::{
+        primitive_types::{DistanceTable, Codebook, Embedding, Segment, IVListEntry}, 
+        ivfpq::{CQ_K_CENTROIDS, EMBEDDING_M_SEGMENTS, AvlWrapper, SEGMENT_DIM},
+        db_api::DatabaseWrapper};
 
     use super::*;
-
+    use std::path::Path;
 
     #[test]
     fn it_searches() {
-        // get raw embeddings
+       // in real world scenario, the way to create an IVF will be by calling the load_ivf method from the db_api
+       let database = DatabaseWrapper::open(Path::new("./dbre")).expect("Opening failed: ");
+       let mut ividx = database.load_ivf().unwrap();
+       let mut model = Model::new();
+       let mut embs_list = vec![];
+       let test_embs_str = std::fs::read_to_string("tests/k_means_test_embs").unwrap();
+        let mut test_embs = test_embs_str.split('\n').into_iter();
+        for _ in 0..EMBEDDINGS_PER_CLUSTER*CENTROIDS_PER_SUBSPACE_CLUSTER {
+            embs_list.push(Embedding::read_from_str(test_embs.next().unwrap()));
+        }
+       let codebook = model.k_means(&mut ividx, &embs_list);
+       let query_vectors = std::fs::read_to_string("./tests/search_query_vectors").unwrap();
+       let mut groomed_qv = query_vectors.split('\n').into_iter();
+       let to_search_embs = [
+           Embedding::read_from_str(groomed_qv.next().unwrap()),
+           Embedding::read_from_str(groomed_qv.next().unwrap())
+       ];
 
-        // perform k_means
+       let results = search(&ividx, &to_search_embs, &codebook, &model);
+       println!("{:?}", results);
 
-        // add them to the db
-
-        // search
     }
     
     // weirdo but works

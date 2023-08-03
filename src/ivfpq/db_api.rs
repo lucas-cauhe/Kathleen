@@ -10,12 +10,12 @@ use serde_cbor;
 //             Codebook as for subquantizers which will build up to the CQ Codebook
 //             CQ and each subquantizers' states somehow??
 
-// the ivf will be working in-memory, although it will get eventually flushed to disk
+// the ivf will be working in-memory, although it will eventually get flushed to disk
 
 
 
-struct Closed {}
-struct Open {}
+pub struct Closed {}
+pub struct Open {}
 
 // represent database wrapper to make common calls (put, write...)
 pub struct DatabaseWrapper<T>{
